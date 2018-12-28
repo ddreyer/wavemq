@@ -1,0 +1,31 @@
+{
+    "deploy": {
+        "targets": [
+            {
+                "type": "sftp",
+                "name": "Wave SGX server",
+                "description": "wavemq project",
+                "host": "ante.cs.berkeley.edu", "port": 22,
+                "dir": "go/src/github.com/immesys/wavemq/",
+                "user": "sgx",
+                "privateKey": "/Users/dyldreyer/.ssh/github_rsa",
+
+                "checkBeforeDeploy": true,
+
+                "deployOnSave": true,
+
+ 
+                
+            },
+        ],
+        "packages": [
+            {
+                "name": "Wave mq",
+                "files": [
+                    "**/*",
+                ],
+                "deployOnSave": true
+            }
+        ]
+    }
+}
