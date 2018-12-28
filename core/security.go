@@ -1,5 +1,12 @@
 package core
 
+/*
+#include "enclave_app.h"
+#cgo CFLAGS: -I/home/sgx/wave-verify-sgx2/enclave_plus_app_src -I/home/sgx/wave-verify-sgx2/utils -I/home/sgx/linux-sgx/linux/installer/bin/sgxsdk/include
+#cgo LDFLAGS: -L/home/sgx/wave-verify-sgx2/enclave_plus_app_src -lverify
+*/
+import "C"
+
 import (
 	"bytes"
 	"context"
@@ -13,14 +20,17 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"bitbucket.org/creachadair/cityhash"
 	"github.com/huichen/murmur"
+	"github.com/immesys/asn1"
 	"github.com/immesys/wave/eapi"
 	eapipb "github.com/immesys/wave/eapi/pb"
 	"github.com/immesys/wave/iapi"
 	"github.com/immesys/wave/localdb/lls"
 	"github.com/immesys/wave/localdb/poc"
+	"github.com/immesys/wave/serdes"
 	"github.com/immesys/wave/storage/overlay"
 	"github.com/immesys/wave/waved"
 	"github.com/immesys/wave/wve"
@@ -285,6 +295,67 @@ func (am *AuthModule) CheckMessage(m *pb.Message) wve.WVE {
 		}
 		//fmt.Printf("returning message invalid from cache\n")
 		return wve.Err(wve.ProofInvalid, "this proof has been cached as invalid\n")
+	}
+
+	// debug code to write proof to a file
+	// fmt.Println("hello")
+	// bl := pem.Block{
+	// 	Type:  eapi.PEM_EXPLICIT_PROOF,
+	// 	Bytes: m.ProofDER,
+	// }
+	// err = ioutil.WriteFile("proof.pem", pem.EncodeToMemory(&bl), 0600)
+	// if err != nil {
+	// 	fmt.Printf("could not write proof file: %v\n", err)
+	// 	os.Exit(1)
+	// }
+
+	fmt.Println("starting enclave verify")
+	ehash := iapi.HashSchemeInstanceFromMultihash(m.Tbs.Namespace)
+	if !ehash.Supported() {
+		return wve.Err(wve.InvalidParameter, "bad namespace")
+	}
+	ext := ehash.CanonicalForm()
+
+	phash := iapi.HashSchemeInstanceFromMultihash([]byte(WAVEMQPermissionSet))
+	if !phash.Supported() {
+		return wve.Err(wve.InvalidParameter, "bad permissionset")
+	}
+	pext := phash.CanonicalForm()
+
+	fmt.Println("trying to form policy")
+	spol := serdes.RTreePolicy{
+		Namespace: *ext,
+		Statements: []serdes.RTreeStatement{
+			{
+				PermissionSet: *pext,
+				Permissions:   []string{WAVEMQPublish},
+				Resource:      m.Tbs.Uri,
+			},
+		},
+	}
+	//This is not important
+	nsloc := iapi.NewLocationSchemeInstanceURL("https://foo.com", 1).CanonicalForm()
+	spol.NamespaceLocation = *nsloc
+
+	wrappedPol := serdes.WaveWireObject{
+		Content: asn1.NewExternal(spol),
+	}
+	polBytes, err := asn1.Marshal(wrappedPol.Content)
+	if err != nil {
+		fmt.Println("ERROR MARSHALING")
+		// return wve.ErrW(wve.InternalError, "could not marshal policy", err)
+	}
+	polEnc := base64.StdEncoding.EncodeToString(polBytes)
+	polDER := C.CString(polEnc)
+	defer C.free(unsafe.Pointer(polDER))
+
+	polDER := (*C.char)(unsafe.Pointer(&polBytes[0]))
+	subject := (*C.char)(unsafe.Pointer(&m.Tbs.SourceEntity[2]))
+	proofDER := (*C.char)(unsafe.Pointer(&m.ProofDER[0]))
+	if ret := C.verify(proofDER, C.ulong(len(m.ProofDER)), subject, C.ulong(len(m.Tbs.SourceEntity)-2),
+		polDER, C.ulong(len(polBytes))); ret != 0 {
+		fmt.Println("ERROR C VERIFYING")
+		// return wve.Err(wve.EnclaveError, "failed to C verify proof")
 	}
 
 	presp, err := am.wave.VerifyProof(ctx, &eapipb.VerifyProofParams{
