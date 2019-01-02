@@ -345,9 +345,6 @@ func (am *AuthModule) CheckMessage(m *pb.Message) wve.WVE {
 		fmt.Println("ERROR MARSHALING")
 		// return wve.ErrW(wve.InternalError, "could not marshal policy", err)
 	}
-	polEnc := base64.StdEncoding.EncodeToString(polBytes)
-	polDER := C.CString(polEnc)
-	defer C.free(unsafe.Pointer(polDER))
 
 	polDER := (*C.char)(unsafe.Pointer(&polBytes[0]))
 	subject := (*C.char)(unsafe.Pointer(&m.Tbs.SourceEntity[2]))
