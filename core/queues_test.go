@@ -18,8 +18,8 @@ func mkmsg() *pb.Message {
 		Namespace: make([]byte, 32),
 	}
 	rand.Read(m.Tbs.Namespace)
-	m.ProofDER = make([]byte, 300000)
-	rand.Read(m.ProofDER)
+	m.Tbs.ProofDER = make([]byte, 300000)
+	rand.Read(m.Tbs.ProofDER)
 	return m
 }
 func getqm(t testing.TB) *QManager {
