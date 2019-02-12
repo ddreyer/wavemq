@@ -107,16 +107,16 @@ message MessageTBS {
   repeated PayloadObject payload = 5;
   //The ID of the router/agent that formed this message
   string originRouter = 6;
+  bytes proofDER = 7;
 }
 message Message {
   Proof proof = 1;
-  bytes proofDER = 2;
-  MessageTBS tbs = 3;
-  bytes signature = 4;
-  repeated bytes encryptionPartition = 5;
-  repeated int64 timestamps = 6;
-  repeated int64 drops = 7;
-  bool persist = 8;
+  MessageTBS tbs = 2;
+  bytes signature = 3;
+  repeated bytes encryptionPartition = 4;
+  repeated int64 timestamps = 5;
+  repeated int64 drops = 6;
+  bool persist = 7;
 
 }
 message PayloadObject {

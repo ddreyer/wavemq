@@ -33,6 +33,7 @@ const WAVEMQPublish = "publish"
 const WAVEMQSubscribe = "subscribe"
 const WAVEMQQuery = "query"
 const WAVEMQRoute = "route"
+const WAVEMQUri = "wavemq"
 
 const ValidatedProofMaxCacheTime = 6 * time.Hour
 const SuccessfulProofCacheTime = 6 * time.Hour
@@ -247,6 +248,7 @@ func (am *AuthModule) CheckMessage(m *pb.Message) wve.WVE {
 		hash.Write(po.Content)
 	}
 	hash.Write([]byte(m.Tbs.OriginRouter))
+	hash.Write(m.Tbs.ProofDER)
 	digest := hash.Sum(nil)
 	resp, err := am.wave.VerifySignature(ctx, &eapipb.VerifySignatureParams{
 		Signer: m.Tbs.SourceEntity,
@@ -268,7 +270,7 @@ func (am *AuthModule) CheckMessage(m *pb.Message) wve.WVE {
 	ick.URI = m.Tbs.Uri
 	ick.Permission = WAVEMQPublish
 
-	ick.ProofLow, ick.ProofHigh = cityhash.Hash128(m.ProofDER)
+	ick.ProofLow, ick.ProofHigh = cityhash.Hash128(m.Tbs.ProofDER)
 
 	// h := sha3.NewShake256()
 	// h.Write(m.ProofDER)
@@ -285,9 +287,20 @@ func (am *AuthModule) CheckMessage(m *pb.Message) wve.WVE {
 		//fmt.Printf("returning message invalid from cache\n")
 		return wve.Err(wve.ProofInvalid, "this proof has been cached as invalid\n")
 	}
+	decresp, err := am.wave.DecryptMessage(context.Background(), &eapipb.DecryptMessageParams{
+		Perspective: am.ourPerspective,
+		Ciphertext:  m.Tbs.ProofDER,
+	})
+	if err != nil {
+		return wve.ErrW(wve.MessageDecryptionError, "failed to decrypt", err)
+	}
+	if decresp.Error != nil {
+		return wve.Err(wve.MessageDecryptionError, decresp.Error.Message)
+	}
+	decryptedProof := decresp.Content
 
 	presp, err := am.wave.VerifyProof(ctx, &eapipb.VerifyProofParams{
-		ProofDER: m.ProofDER,
+		ProofDER: decryptedProof,
 		Subject:  m.Tbs.SourceEntity,
 		RequiredRTreePolicy: &eapipb.RTreePolicy{
 			Namespace: m.Tbs.Namespace,
@@ -535,7 +548,6 @@ func (am *AuthModule) PrepareMessage(persp *pb.Perspective, m *pb.Message) (*pb.
 		Signature:           m.Signature,
 		Persist:             m.Persist,
 		EncryptionPartition: m.EncryptionPartition,
-		ProofDER:            m.ProofDER,
 		Tbs: &pb.MessageTBS{
 			SourceEntity: m.Tbs.SourceEntity,
 			//TODO source location
@@ -543,6 +555,7 @@ func (am *AuthModule) PrepareMessage(persp *pb.Perspective, m *pb.Message) (*pb.
 			Uri:          m.Tbs.Uri,
 			Payload:      decryptedPayload,
 			OriginRouter: m.Tbs.OriginRouter,
+			ProofDER:     m.Tbs.ProofDER,
 		},
 	}, nil
 }
@@ -641,11 +654,23 @@ func (am *AuthModule) FormMessage(p *pb.PublishParams, routerID string) (*pb.Mes
 				return nil, wve.Err(wve.NoProofFound, proofresp.Error.Message)
 			}
 
-			proofder = proofresp.ProofDER
+			// encrypt proof under wavemq uri
+			encresp, err := am.wave.EncryptMessage(context.Background(), &eapipb.EncryptMessageParams{
+				Namespace: p.Namespace,
+				Resource:  WAVEMQUri,
+				Content:   proofresp.ProofDER,
+			})
+			if err != nil {
+				return nil, wve.ErrW(wve.MessageEncryptionError, "failed to encrypt", err)
+			}
+			if encresp.Error != nil {
+				return nil, wve.Err(wve.MessageEncryptionError, encresp.Error.Message)
+			}
+			proofder = encresp.Ciphertext
 			ci := &bcacheItem{
 				CacheExpiry: time.Now().Add(SuccessfulProofCacheTime),
 				Valid:       true,
-				DER:         proofresp.ProofDER,
+				DER:         proofder,
 				ProofExpiry: time.Unix(0, proofresp.Result.Expiry*1e6),
 			}
 			if ci.ProofExpiry.Before(ci.CacheExpiry) {
@@ -683,6 +708,7 @@ func (am *AuthModule) FormMessage(p *pb.PublishParams, routerID string) (*pb.Mes
 		}
 		encryptedPayload = []*pb.PayloadObject{{Schema: "text", Content: encresp.Ciphertext}}
 	}
+
 	hash := sha3.New256()
 	hash.Write(p.Namespace)
 	hash.Write([]byte(p.Uri))
@@ -691,6 +717,7 @@ func (am *AuthModule) FormMessage(p *pb.PublishParams, routerID string) (*pb.Mes
 		hash.Write(po.Content)
 	}
 	hash.Write([]byte(routerID))
+	hash.Write(proofder)
 	digest := hash.Sum(nil)
 
 	signresp, err := am.wave.Sign(context.Background(), &eapipb.SignParams{
@@ -705,7 +732,6 @@ func (am *AuthModule) FormMessage(p *pb.PublishParams, routerID string) (*pb.Mes
 	}
 
 	return &pb.Message{
-		ProofDER:            proofder,
 		Signature:           signresp.Signature,
 		Persist:             p.Persist,
 		EncryptionPartition: p.EncryptionPartition,
@@ -716,6 +742,7 @@ func (am *AuthModule) FormMessage(p *pb.PublishParams, routerID string) (*pb.Mes
 			Uri:          p.Uri,
 			Payload:      encryptedPayload,
 			OriginRouter: routerID,
+			ProofDER:     proofder,
 		},
 	}, nil
 }
