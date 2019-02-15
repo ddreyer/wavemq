@@ -47,6 +47,11 @@ func TestSubProof(t *testing.T) {
 	am.wave.PublishEntity(context.Background(), &pb.PublishEntityParams{
 		DER: ent.PublicDER,
 	})
+	router, err := am.wave.CreateEntity(context.Background(), &pb.CreateEntityParams{})
+	require.NoError(t, err)
+	am.wave.PublishEntity(context.Background(), &pb.PublishEntityParams{
+		DER: router.PublicDER,
+	})
 	attresp, err := am.wave.CreateAttestation(context.Background(), &pb.CreateAttestationParams{
 		Perspective: &pb.Perspective{
 			EntitySecret: &pb.EntitySecret{
@@ -84,6 +89,53 @@ func TestSubProof(t *testing.T) {
 	}, "lol")
 
 	require.NoError(t, err)
+	err = am.CheckSubscription(subreq)
+	require.Error(t, err)
+
+	am.ourPerspective = &pb.Perspective{
+		EntitySecret: &pb.EntitySecret{
+			DER: router.SecretDER,
+		},
+	}
+	am.perspectiveHash = router.Hash
+	attresp, err = am.wave.CreateAttestation(context.Background(), &pb.CreateAttestationParams{
+		Perspective: &pb.Perspective{
+			EntitySecret: &pb.EntitySecret{
+				DER: ns.SecretDER,
+			},
+		},
+		Publish:     true,
+		SubjectHash: am.perspectiveHash,
+		Policy: &pb.Policy{
+			RTreePolicy: &pb.RTreePolicy{
+				Namespace: ns.Hash,
+				Statements: []*pb.RTreePolicyStatement{
+					{
+						PermissionSet: []byte(consts.WaveBuiltinPSET),
+						Permissions:   []string{consts.WaveBuiltinE2EE},
+						Resource:      WAVEMQUri,
+					},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Nil(t, attresp.Error)
+	resp, err := am.wave.ResyncPerspectiveGraph(context.Background(), &pb.ResyncPerspectiveGraphParams{
+		Perspective: am.ourPerspective,
+	})
+	if err != nil {
+		panic(err)
+	}
+	if resp.Error != nil {
+		panic(resp.Error.Message)
+	}
+	err = am.wave.WaitForSyncCompleteHack(&pb.SyncParams{
+		Perspective: am.ourPerspective,
+	})
+	if err != nil {
+		panic(err)
+	}
 	err = am.CheckSubscription(subreq)
 	require.NoError(t, err)
 }

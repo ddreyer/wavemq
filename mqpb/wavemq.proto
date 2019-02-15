@@ -72,15 +72,15 @@ message PeerSubscriptionTBS {
   //Should be > 1 minute to prevent disconnect of live queues
   //This is in seconds
   int64 expiry = 6;
+  bytes proofDER = 7;
 }
 
 message PeerSubscribeParams {
   PeerSubscriptionTBS tbs = 1;
   bytes signature = 2;
-  bytes proofDER = 3;
   //This is a unix timestamp in nanoseconds that this subscription should
   //expire at
-  int64 absoluteExpiry = 4;
+  int64 absoluteExpiry = 3;
 }
 
 message PublishParams{

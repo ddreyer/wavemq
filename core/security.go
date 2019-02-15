@@ -349,6 +349,7 @@ func (am *AuthModule) CheckSubscription(s *pb.PeerSubscribeParams) wve.WVE {
 	hash.Write([]byte(s.Tbs.Uri))
 	hash.Write([]byte(s.Tbs.Id))
 	hash.Write([]byte(s.Tbs.RouterID))
+	hash.Write(s.Tbs.ProofDER)
 	digest := hash.Sum(nil)
 
 	resp, err := am.wave.VerifySignature(context.Background(), &eapipb.VerifySignatureParams{
@@ -368,7 +369,7 @@ func (am *AuthModule) CheckSubscription(s *pb.PeerSubscribeParams) wve.WVE {
 	copy(ick.Namespace[:], s.Tbs.Namespace)
 	ick.URI = s.Tbs.Uri
 	ick.Permission = WAVEMQSubscribe
-	ick.ProofLow, ick.ProofHigh = cityhash.Hash128(s.ProofDER)
+	ick.ProofLow, ick.ProofHigh = cityhash.Hash128(s.Tbs.ProofDER)
 	//
 	// h := sha3.NewShake256()
 	// h.Write(s.ProofDER)
@@ -386,9 +387,22 @@ func (am *AuthModule) CheckSubscription(s *pb.PeerSubscribeParams) wve.WVE {
 		}
 		return wve.Err(wve.ProofInvalid, "this proof has been cached as invalid\n")
 	}
+
+	decresp, err := am.wave.DecryptMessage(context.Background(), &eapipb.DecryptMessageParams{
+		Perspective: am.ourPerspective,
+		Ciphertext:  s.Tbs.ProofDER,
+	})
+	if err != nil {
+		return wve.ErrW(wve.MessageDecryptionError, "failed to decrypt", err)
+	}
+	if decresp.Error != nil {
+		return wve.Err(wve.MessageDecryptionError, decresp.Error.Message)
+	}
+	decryptedProof := decresp.Content
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	presp, err := am.wave.VerifyProof(ctx, &eapipb.VerifyProofParams{
-		ProofDER: s.ProofDER,
+		ProofDER: decryptedProof,
 		Subject:  s.Tbs.SourceEntity,
 		RequiredRTreePolicy: &eapipb.RTreePolicy{
 			Namespace: s.Tbs.Namespace,
@@ -773,32 +787,12 @@ func (am *AuthModule) FormSubRequest(p *pb.SubscribeParams, routerID string) (*p
 		am.phashcachemu.Unlock()
 		realhash = iresp.Entity.Hash
 	}
-
-	hash := sha3.New256()
-	hash.Write(p.Namespace)
-	hash.Write([]byte(p.Uri))
-	hash.Write([]byte(p.Identifier))
-	hash.Write([]byte(routerID))
-	digest := hash.Sum(nil)
-
 	perspective := &eapipb.Perspective{
 		EntitySecret: &eapipb.EntitySecret{
 			DER:        p.Perspective.EntitySecret.DER,
 			Passphrase: p.Perspective.EntitySecret.Passphrase,
 		},
 	}
-
-	signresp, err := am.wave.Sign(context.Background(), &eapipb.SignParams{
-		Perspective: perspective,
-		Content:     digest,
-	})
-	if err != nil {
-		return nil, wve.ErrW(wve.InvalidSignature, "failed to sign", err)
-	}
-	if signresp.Error != nil {
-		return nil, wve.Err(wve.InvalidSignature, signresp.Error.Message)
-	}
-
 	bk := bcacheKey{}
 	copy(bk.Namespace[:], p.Namespace)
 	copy(bk.Target[:], realhash)
@@ -854,12 +848,22 @@ func (am *AuthModule) FormSubRequest(p *pb.SubscribeParams, routerID string) (*p
 				am.bcachemu.Unlock()
 				return nil, wve.Err(wve.NoProofFound, proofresp.Error.Message)
 			}
-
-			proofder = proofresp.ProofDER
+			encresp, err := am.wave.EncryptMessage(context.Background(), &eapipb.EncryptMessageParams{
+				Namespace: p.Namespace,
+				Resource:  WAVEMQUri,
+				Content:   proofresp.ProofDER,
+			})
+			if err != nil {
+				return nil, wve.ErrW(wve.MessageEncryptionError, "failed to encrypt", err)
+			}
+			if encresp.Error != nil {
+				return nil, wve.Err(wve.MessageEncryptionError, encresp.Error.Message)
+			}
+			proofder = encresp.Ciphertext
 			ci := &bcacheItem{
 				CacheExpiry: time.Now().Add(SuccessfulProofCacheTime),
 				Valid:       true,
-				DER:         proofresp.ProofDER,
+				DER:         proofder,
 				ProofExpiry: time.Unix(0, proofresp.Result.Expiry*1e6),
 			}
 			if ci.ProofExpiry.Before(ci.CacheExpiry) {
@@ -882,6 +886,25 @@ func (am *AuthModule) FormSubRequest(p *pb.SubscribeParams, routerID string) (*p
 		}
 	}
 
+	hash := sha3.New256()
+	hash.Write(p.Namespace)
+	hash.Write([]byte(p.Uri))
+	hash.Write([]byte(p.Identifier))
+	hash.Write([]byte(routerID))
+	hash.Write(proofder)
+	digest := hash.Sum(nil)
+
+	signresp, err := am.wave.Sign(context.Background(), &eapipb.SignParams{
+		Perspective: perspective,
+		Content:     digest,
+	})
+	if err != nil {
+		return nil, wve.ErrW(wve.InvalidSignature, "failed to sign", err)
+	}
+	if signresp.Error != nil {
+		return nil, wve.Err(wve.InvalidSignature, signresp.Error.Message)
+	}
+
 	return &pb.PeerSubscribeParams{
 		Tbs: &pb.PeerSubscriptionTBS{
 			Expiry:       p.Expiry,
@@ -890,9 +913,9 @@ func (am *AuthModule) FormSubRequest(p *pb.SubscribeParams, routerID string) (*p
 			Uri:          p.Uri,
 			Id:           p.Identifier,
 			RouterID:     routerID,
+			ProofDER:     proofder,
 		},
 		Signature:      signresp.Signature,
-		ProofDER:       proofder,
 		AbsoluteExpiry: expiry.UnixNano(),
 	}, nil
 
