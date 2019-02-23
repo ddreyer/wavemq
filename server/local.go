@@ -111,14 +111,14 @@ func (s *srv) ConnectionStatus(ctx context.Context, p *pb.ConnectionStatusParams
 }
 
 func (s *srv) Publish(ctx context.Context, p *pb.PublishParams) (*pb.PublishResponse, error) {
-	m, err := s.am.FormMessage(p, s.tm.RouterID())
+	enc, dec, err := s.am.FormMessage(p, s.tm.RouterID())
 	if err != nil {
 		pmFailedFormMessage.Add(1)
 		return &pb.PublishResponse{
 			Error: ToError(err),
 		}, nil
 	}
-	s.tm.Publish(m)
+	s.tm.Publish(enc, dec)
 	return &pb.PublishResponse{}, nil
 }
 
@@ -170,7 +170,7 @@ func (s *srv) Query(p *pb.QueryParams, r pb.WAVEMQ_QueryServer) error {
 		}
 
 		//Validate the message
-		err = s.am.CheckMessage(msg.Message)
+		_, err = s.am.CheckMessage(msg.Message)
 		if err != nil {
 			pmFailedProofs.Add(1)
 			lg.Info("dropping query message: %v", err)
@@ -247,7 +247,7 @@ func (s *srv) Subscribe(p *pb.SubscribeParams, r pb.WAVEMQ_SubscribeServer) erro
 			}
 			it = pb.ShallowCloneMessageForDrops(it)
 			it.Drops = append(it.Drops, q.Drops())
-			err := s.am.CheckMessage(it)
+			_, err := s.am.CheckMessage(it)
 			if err != nil {
 				pmFailedProofs.Add(1)
 				lg.Infof("dropping message in subscribe %q due to invalid proof", it.Tbs.Uri)

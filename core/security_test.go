@@ -179,13 +179,12 @@ func TestMessageNoProof(t *testing.T) {
 			DER: ent.SecretDER,
 		},
 	}
-	msg, err := am.FormMessage(&mqpb.PublishParams{
+	_, _, err = am.FormMessage(&mqpb.PublishParams{
 		Perspective: persp,
 		Namespace:   ns.Hash,
 		Uri:         "foo/baz",
 	}, "lol")
 	require.NotNil(t, err)
-	_ = msg
 }
 
 func BenchmarkFormMessage(b *testing.B) {
@@ -231,13 +230,12 @@ func BenchmarkFormMessage(b *testing.B) {
 	b.ResetTimer()
 	fmt.Printf("===== BEGIN <<<<\n")
 	for i := 0; i < b.N; i++ {
-		msg, err := am.FormMessage(&mqpb.PublishParams{
+		_, _, err := am.FormMessage(&mqpb.PublishParams{
 			Perspective: persp,
 			Namespace:   ns.Hash,
 			Uri:         "foo/bar",
 		}, "lol")
 		require.NoError(b, err)
-		_ = msg
 	}
 	fmt.Printf("===== END >>>>>>\n")
 }
@@ -287,7 +285,7 @@ func TestMessage(t *testing.T) {
 		},
 	}
 	content := []byte("hello world")
-	msg, err := am.FormMessage(&mqpb.PublishParams{
+	msg, _, err := am.FormMessage(&mqpb.PublishParams{
 		Perspective: persp,
 		Namespace:   ns.Hash,
 		Uri:         "foo/bar",
@@ -296,7 +294,7 @@ func TestMessage(t *testing.T) {
 	require.NoError(t, err)
 
 	//validate
-	try1 := am.CheckMessage(msg)
+	_, try1 := am.CheckMessage(msg)
 	require.Error(t, try1)
 
 	am.ourPerspective = &pb.Perspective{
@@ -345,9 +343,9 @@ func TestMessage(t *testing.T) {
 	}
 
 	//validate
-	try1 = am.CheckMessage(msg)
+	_, try1 = am.CheckMessage(msg)
 	require.NoError(t, try1)
-	try2 := am.CheckMessage(msg)
+	_, try2 := am.CheckMessage(msg)
 	require.NoError(t, try2)
 
 	//prepare
@@ -407,7 +405,7 @@ func TestEncryptedMessage(t *testing.T) {
 	}
 
 	content := []byte("hello world")
-	msg, err := am.FormMessage(&mqpb.PublishParams{
+	msg, _, err := am.FormMessage(&mqpb.PublishParams{
 		Perspective:         persp,
 		Namespace:           ns.Hash,
 		Uri:                 "foo/bar",
@@ -417,7 +415,7 @@ func TestEncryptedMessage(t *testing.T) {
 	require.NoError(t, err)
 
 	//validate
-	try1 := am.CheckMessage(msg)
+	_, try1 := am.CheckMessage(msg)
 	require.Error(t, try1)
 
 	am.ourPerspective = &pb.Perspective{
@@ -466,9 +464,9 @@ func TestEncryptedMessage(t *testing.T) {
 	}
 
 	// validate
-	try1 = am.CheckMessage(msg)
+	_, try1 = am.CheckMessage(msg)
 	require.NoError(t, try1)
-	try2 := am.CheckMessage(msg)
+	_, try2 := am.CheckMessage(msg)
 	require.NoError(t, try2)
 
 	// prepare
@@ -548,7 +546,7 @@ func BenchmarkCheckMessage(t *testing.B) {
 			DER: ent.SecretDER,
 		},
 	}
-	msg, err := am.FormMessage(&mqpb.PublishParams{
+	msg, _, err := am.FormMessage(&mqpb.PublishParams{
 		Perspective: persp,
 		Namespace:   ns.Hash,
 		Uri:         "foo/bar",
@@ -559,7 +557,7 @@ func BenchmarkCheckMessage(t *testing.B) {
 	fmt.Printf("===== BEGIN <<<<\n")
 	for i := 0; i < t.N; i++ {
 		//validate
-		try1 := am.CheckMessage(msg)
+		_, try1 := am.CheckMessage(msg)
 		require.NoError(t, try1)
 	}
 	fmt.Printf("===== END >>>>>>\n")

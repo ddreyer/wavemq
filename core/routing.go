@@ -304,23 +304,25 @@ func (t *Terminus) RouterID() string {
 	return t.ourNodeId
 }
 
-func (t *Terminus) Publish(m *pb.Message) {
+// takes both an encrypted and decrypted message as arguments for internal
+// publishing purposes as well as enqueueing
+func (t *Terminus) Publish(encMsg *pb.Message, decMsg *pb.Message) {
 	pmPublishedMessages.Add(1)
 	//Append the initial routing time
-	m.Timestamps = append(m.Timestamps, time.Now().UnixNano())
+	encMsg.Timestamps = append(encMsg.Timestamps, time.Now().UnixNano())
 
 	var clientlist []*subscription
-	ns := base64.URLEncoding.EncodeToString(m.Tbs.Namespace)
-	fullUri := ns + "/" + m.Tbs.Uri
+	ns := base64.URLEncoding.EncodeToString(decMsg.Tbs.Namespace)
+	fullUri := ns + "/" + string(decMsg.Tbs.Uri)
 	t.rMatchSubs(fullUri, func(s *subscription) {
 		if s.q.GetIsPeerUpstream() {
 			//We only deliver local messages
-			if m.Tbs.OriginRouter != t.ourNodeId {
+			if decMsg.Tbs.OriginRouter != t.ourNodeId {
 				//This came from upstream, don't send it back on upstream
 				return
 			}
 		} else {
-			if s.q.GetRecipientID() == m.Tbs.OriginRouter {
+			if s.q.GetRecipientID() == decMsg.Tbs.OriginRouter {
 				if s.q.GetRecipientID() == "" {
 					panic(string(s.q.ID()))
 				}
@@ -342,14 +344,14 @@ func (t *Terminus) Publish(m *pb.Message) {
 			t.unsubscribeInternalID(sub.subid)
 		} else {
 			pmEnqueuedMessages.Add(1)
-			sub.q.Enqueue(m)
+			sub.q.Enqueue(encMsg)
 			//fmt.Printf("post enq length=%d (%p)\n", sub.q.length+sub.q.uncommittedLength, sub.q)
 		}
 	}
 
 	//If we are the DR for this and it is a persist message, also persist it
-	if t.drnamespaces[ns] && m.Persist {
-		serial, err := proto.Marshal(m)
+	if t.drnamespaces[ns] && decMsg.Persist {
+		serial, err := proto.Marshal(decMsg)
 		if err != nil {
 			panic(err)
 		}

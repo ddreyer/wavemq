@@ -102,14 +102,14 @@ func (s *peerServer) PeerQueryRequest(p *pb.PeerQueryParams, r pb.WAVEMQPeering_
 }
 
 func (s *peerServer) PeerPublish(ctx context.Context, p *pb.PeerPublishParams) (*pb.PeerPublishResponse, error) {
-	err := s.am.CheckMessage(p.Msg)
+	decMsg, err := s.am.CheckMessage(p.Msg)
 	if err != nil {
 		pmFailedPublish.Add(1)
 		return &pb.PeerPublishResponse{
 			Error: ToError(err),
 		}, nil
 	}
-	s.tm.Publish(p.Msg)
+	s.tm.Publish(p.Msg, decMsg)
 	return &pb.PeerPublishResponse{}, nil
 }
 func (s *peerServer) PeerSubscribe(p *pb.PeerSubscribeParams, r pb.WAVEMQPeering_PeerSubscribeServer) error {

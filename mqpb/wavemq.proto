@@ -103,7 +103,7 @@ message MessageTBS {
   bytes sourceEntity = 1;
   LocationURI sourceLocation = 2;
   bytes namespace = 3;
-  string uri = 4;
+  bytes uri = 4;
   repeated PayloadObject payload = 5;
   //The ID of the router/agent that formed this message
   string originRouter = 6;

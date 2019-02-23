@@ -232,17 +232,19 @@ func (am *AuthModule) SetRouterEntityFile(filename string) error {
 	return nil
 }
 
-//This checks that a publish message is authorized for the given URI
-func (am *AuthModule) CheckMessage(m *pb.Message) wve.WVE {
+// This checks that a publish message is authorized for the given URI
+// Returns decrypted message
+func (am *AuthModule) CheckMessage(m *pb.Message) (*pb.Message, wve.WVE) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 
 	if m.Tbs == nil {
-		return wve.Err(wve.InvalidParameter, "message missing TBS")
+		return nil, wve.Err(wve.InvalidParameter, "message missing TBS")
 	}
 	//Check the signature
 	hash := sha3.New256()
+	hash.Write(m.Tbs.SourceEntity)
 	hash.Write(m.Tbs.Namespace)
-	hash.Write([]byte(m.Tbs.Uri))
+	hash.Write(m.Tbs.Uri)
 	for _, po := range m.Tbs.Payload {
 		hash.Write([]byte(po.Schema))
 		hash.Write(po.Content)
@@ -250,24 +252,59 @@ func (am *AuthModule) CheckMessage(m *pb.Message) wve.WVE {
 	hash.Write([]byte(m.Tbs.OriginRouter))
 	hash.Write(m.Tbs.ProofDER)
 	digest := hash.Sum(nil)
+
+	decresp, err := am.wave.DecryptMessage(context.Background(), &eapipb.DecryptMessageParams{
+		Perspective: am.ourPerspective,
+		Ciphertext:  m.Tbs.SourceEntity,
+	})
+	if err != nil {
+		return nil, wve.ErrW(wve.MessageDecryptionError, "failed to decrypt", err)
+	}
+	if decresp.Error != nil {
+		return nil, wve.Err(wve.MessageDecryptionError, decresp.Error.Message)
+	}
+	decryptedSrcEnt := decresp.Content
 	resp, err := am.wave.VerifySignature(ctx, &eapipb.VerifySignatureParams{
-		Signer: m.Tbs.SourceEntity,
+		Signer: decryptedSrcEnt,
 		//Todo signer location
 		Signature: m.Signature,
 		Content:   digest,
 	})
 	if err != nil {
-		return wve.ErrW(wve.InvalidSignature, "could not validate signature", err)
+		return nil, wve.ErrW(wve.InvalidSignature, "could not validate signature", err)
 	}
 	if resp.Error != nil {
-		return wve.Err(wve.InvalidSignature, "failed to validate message signature: "+resp.Error.Message)
+		return nil, wve.Err(wve.InvalidSignature, "failed to validate message signature: "+resp.Error.Message)
 	}
+
+	decresp, err = am.wave.DecryptMessage(context.Background(), &eapipb.DecryptMessageParams{
+		Perspective: am.ourPerspective,
+		Ciphertext:  m.Tbs.Namespace,
+	})
+	if err != nil {
+		return nil, wve.ErrW(wve.MessageDecryptionError, "failed to decrypt", err)
+	}
+	if decresp.Error != nil {
+		return nil, wve.Err(wve.MessageDecryptionError, decresp.Error.Message)
+	}
+	decryptedNamespace := decresp.Content
+	decresp, err = am.wave.DecryptMessage(context.Background(), &eapipb.DecryptMessageParams{
+		Perspective: am.ourPerspective,
+		Ciphertext:  m.Tbs.Uri,
+	})
+	if err != nil {
+		return nil, wve.ErrW(wve.MessageDecryptionError, "failed to decrypt", err)
+	}
+	if decresp.Error != nil {
+		return nil, wve.Err(wve.MessageDecryptionError, decresp.Error.Message)
+	}
+	decryptedUri := decresp.Content
 
 	//Now check the proof
 	ick := icacheKey{}
-	copy(ick.Namespace[:], m.Tbs.Namespace)
-	copy(ick.Entity[:], m.Tbs.SourceEntity)
-	ick.URI = m.Tbs.Uri
+	copy(ick.Namespace[:], decryptedNamespace)
+	copy(ick.Entity[:], decryptedSrcEnt)
+	ick.URI = string(decryptedUri)
 	ick.Permission = WAVEMQPublish
 
 	ick.ProofLow, ick.ProofHigh = cityhash.Hash128(m.Tbs.ProofDER)
@@ -276,46 +313,57 @@ func (am *AuthModule) CheckMessage(m *pb.Message) wve.WVE {
 	// h.Write(m.ProofDER)
 	// h.Read(ick.ProofHash[:])
 
+	decMsg := pb.Message{
+		Persist: m.Persist,
+		Tbs: &pb.MessageTBS{
+			//TODO source location
+			Namespace:    decryptedNamespace,
+			Uri:          decryptedUri,
+			Payload:      m.Tbs.Payload,
+			OriginRouter: m.Tbs.OriginRouter,
+		},
+	}
+
 	am.icachemu.Lock()
 	entry, ok := am.icache[ick]
 	am.icachemu.Unlock()
 	if ok && entry.CacheExpiry.After(time.Now()) {
 		if entry.Valid {
 			//fmt.Printf("returning message valid from cache\n")
-			return nil
+			return &decMsg, nil
 		}
 		//fmt.Printf("returning message invalid from cache\n")
-		return wve.Err(wve.ProofInvalid, "this proof has been cached as invalid\n")
+		return nil, wve.Err(wve.ProofInvalid, "this proof has been cached as invalid\n")
 	}
-	decresp, err := am.wave.DecryptMessage(context.Background(), &eapipb.DecryptMessageParams{
+	decresp, err = am.wave.DecryptMessage(context.Background(), &eapipb.DecryptMessageParams{
 		Perspective: am.ourPerspective,
 		Ciphertext:  m.Tbs.ProofDER,
 	})
 	if err != nil {
-		return wve.ErrW(wve.MessageDecryptionError, "failed to decrypt", err)
+		return nil, wve.ErrW(wve.MessageDecryptionError, "failed to decrypt", err)
 	}
 	if decresp.Error != nil {
-		return wve.Err(wve.MessageDecryptionError, decresp.Error.Message)
+		return nil, wve.Err(wve.MessageDecryptionError, decresp.Error.Message)
 	}
 	decryptedProof := decresp.Content
 
 	presp, err := am.wave.VerifyProof(ctx, &eapipb.VerifyProofParams{
 		ProofDER: decryptedProof,
-		Subject:  m.Tbs.SourceEntity,
+		Subject:  decryptedSrcEnt,
 		RequiredRTreePolicy: &eapipb.RTreePolicy{
-			Namespace: m.Tbs.Namespace,
+			Namespace: decryptedNamespace,
 			Statements: []*eapipb.RTreePolicyStatement{
 				{
 					PermissionSet: []byte(WAVEMQPermissionSet),
 					Permissions:   []string{WAVEMQPublish},
-					Resource:      m.Tbs.Uri,
+					Resource:      string(decryptedUri),
 				},
 			},
 		},
 	})
 	cancel()
 	if err != nil {
-		return wve.ErrW(wve.InternalError, "could not validate proof", err)
+		return nil, wve.ErrW(wve.InternalError, "could not validate proof", err)
 	}
 	if presp.Error != nil {
 		am.icachemu.Lock()
@@ -324,7 +372,7 @@ func (am *AuthModule) CheckMessage(m *pb.Message) wve.WVE {
 			Valid:       false,
 		}
 		am.icachemu.Unlock()
-		return wve.Err(wve.ProofInvalid, presp.Error.Message)
+		return nil, wve.Err(wve.ProofInvalid, presp.Error.Message)
 	}
 
 	expiry := time.Unix(0, presp.Result.Expiry*1e6)
@@ -337,7 +385,7 @@ func (am *AuthModule) CheckMessage(m *pb.Message) wve.WVE {
 		Valid:       true,
 	}
 	am.icachemu.Unlock()
-	return nil
+	return &decMsg, nil
 }
 
 //Check that the given proof is valid for subscription on the given URI
@@ -345,6 +393,7 @@ func (am *AuthModule) CheckSubscription(s *pb.PeerSubscribeParams) wve.WVE {
 
 	//Check the signature
 	hash := sha3.New256()
+	hash.Write(s.Tbs.SourceEntity)
 	hash.Write(s.Tbs.Namespace)
 	hash.Write([]byte(s.Tbs.Uri))
 	hash.Write([]byte(s.Tbs.Id))
@@ -352,8 +401,19 @@ func (am *AuthModule) CheckSubscription(s *pb.PeerSubscribeParams) wve.WVE {
 	hash.Write(s.Tbs.ProofDER)
 	digest := hash.Sum(nil)
 
+	decresp, err := am.wave.DecryptMessage(context.Background(), &eapipb.DecryptMessageParams{
+		Perspective: am.ourPerspective,
+		Ciphertext:  s.Tbs.SourceEntity,
+	})
+	if err != nil {
+		return wve.ErrW(wve.MessageDecryptionError, "failed to decrypt", err)
+	}
+	if decresp.Error != nil {
+		return wve.Err(wve.MessageDecryptionError, decresp.Error.Message)
+	}
+	decryptedSrcEnt := decresp.Content
 	resp, err := am.wave.VerifySignature(context.Background(), &eapipb.VerifySignatureParams{
-		Signer: s.Tbs.SourceEntity,
+		Signer: decryptedSrcEnt,
 		//Todo signer location
 		Signature: s.Signature,
 		Content:   digest,
@@ -388,7 +448,7 @@ func (am *AuthModule) CheckSubscription(s *pb.PeerSubscribeParams) wve.WVE {
 		return wve.Err(wve.ProofInvalid, "this proof has been cached as invalid\n")
 	}
 
-	decresp, err := am.wave.DecryptMessage(context.Background(), &eapipb.DecryptMessageParams{
+	decresp, err = am.wave.DecryptMessage(context.Background(), &eapipb.DecryptMessageParams{
 		Perspective: am.ourPerspective,
 		Ciphertext:  s.Tbs.ProofDER,
 	})
@@ -403,7 +463,7 @@ func (am *AuthModule) CheckSubscription(s *pb.PeerSubscribeParams) wve.WVE {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	presp, err := am.wave.VerifyProof(ctx, &eapipb.VerifyProofParams{
 		ProofDER: decryptedProof,
-		Subject:  s.Tbs.SourceEntity,
+		Subject:  decryptedSrcEnt,
 		RequiredRTreePolicy: &eapipb.RTreePolicy{
 			Namespace: s.Tbs.Namespace,
 			Statements: []*eapipb.RTreePolicyStatement{
@@ -558,26 +618,76 @@ func (am *AuthModule) PrepareMessage(persp *pb.Perspective, m *pb.Message) (*pb.
 		}
 		decryptedPayload = []*pb.PayloadObject{{Schema: "text", Content: decresp.Content}}
 	}
+	decresp, err := am.wave.DecryptMessage(context.Background(), &eapipb.DecryptMessageParams{
+		Perspective: am.ourPerspective,
+		Ciphertext:  m.Tbs.SourceEntity,
+		ResyncFirst: true,
+	})
+	if err != nil {
+		return nil, wve.ErrW(wve.MessageDecryptionError, "failed to decrypt", err)
+	}
+	if decresp.Error != nil {
+		return nil, wve.Err(wve.MessageDecryptionError, decresp.Error.Message)
+	}
+	decryptedSrcEnt := decresp.Content
+	decresp, err = am.wave.DecryptMessage(context.Background(), &eapipb.DecryptMessageParams{
+		Perspective: am.ourPerspective,
+		Ciphertext:  m.Tbs.Uri,
+		ResyncFirst: true,
+	})
+	if err != nil {
+		return nil, wve.ErrW(wve.MessageDecryptionError, "failed to decrypt", err)
+	}
+	if decresp.Error != nil {
+		return nil, wve.Err(wve.MessageDecryptionError, decresp.Error.Message)
+	}
+	decryptedNamespace := decresp.Content
+	decresp, err = am.wave.DecryptMessage(context.Background(), &eapipb.DecryptMessageParams{
+		Perspective: am.ourPerspective,
+		Ciphertext:  m.Tbs.Uri,
+		ResyncFirst: true,
+	})
+	if err != nil {
+		return nil, wve.ErrW(wve.MessageDecryptionError, "failed to decrypt", err)
+	}
+	if decresp.Error != nil {
+		return nil, wve.Err(wve.MessageDecryptionError, decresp.Error.Message)
+	}
+	decryptedUri := decresp.Content
+	decresp, err = am.wave.DecryptMessage(context.Background(), &eapipb.DecryptMessageParams{
+		Perspective: am.ourPerspective,
+		Ciphertext:  m.Tbs.ProofDER,
+		ResyncFirst: true,
+	})
+	if err != nil {
+		return nil, wve.ErrW(wve.MessageDecryptionError, "failed to decrypt", err)
+	}
+	if decresp.Error != nil {
+		return nil, wve.Err(wve.MessageDecryptionError, decresp.Error.Message)
+	}
+	decryptedProof := decresp.Content
 	return &pb.Message{
 		Signature:           m.Signature,
 		Persist:             m.Persist,
 		EncryptionPartition: m.EncryptionPartition,
 		Tbs: &pb.MessageTBS{
-			SourceEntity: m.Tbs.SourceEntity,
+			SourceEntity: decryptedSrcEnt,
 			//TODO source location
-			Namespace:    m.Tbs.Namespace,
-			Uri:          m.Tbs.Uri,
+			Namespace:    decryptedNamespace,
+			Uri:          decryptedUri,
 			Payload:      decryptedPayload,
 			OriginRouter: m.Tbs.OriginRouter,
-			ProofDER:     m.Tbs.ProofDER,
+			ProofDER:     decryptedProof,
 		},
 	}, nil
 }
 
-func (am *AuthModule) FormMessage(p *pb.PublishParams, routerID string) (*pb.Message, wve.WVE) {
+// Forms both an encrypted and decrypted message for internal publishing purposes
+// as well as publishing
+func (am *AuthModule) FormMessage(p *pb.PublishParams, routerID string) (*pb.Message, *pb.Message, wve.WVE) {
 
 	if p.Perspective == nil || p.Perspective.EntitySecret == nil {
-		return nil, wve.Err(wve.InvalidParameter, "missing perspective")
+		return nil, nil, wve.Err(wve.InvalidParameter, "missing perspective")
 	}
 
 	perspectiveHash := murmur.Murmur3(p.Perspective.EntitySecret.DER)
@@ -590,10 +700,10 @@ func (am *AuthModule) FormMessage(p *pb.PublishParams, routerID string) (*pb.Mes
 			Content: p.Perspective.EntitySecret.DER,
 		})
 		if err != nil {
-			return nil, wve.ErrW(wve.NoProofFound, "failed validate perspective", err)
+			return nil, nil, wve.ErrW(wve.NoProofFound, "failed validate perspective", err)
 		}
 		if iresp.Error != nil {
-			return nil, wve.Err(wve.NoProofFound, "failed validate perspective: "+iresp.Error.Message)
+			return nil, nil, wve.Err(wve.NoProofFound, "failed validate perspective: "+iresp.Error.Message)
 		}
 		am.phashcachemu.Lock()
 		am.phashcache[perspectiveHash] = iresp.Entity.Hash
@@ -655,7 +765,7 @@ func (am *AuthModule) FormMessage(p *pb.PublishParams, routerID string) (*pb.Mes
 				ResyncFirst: true,
 			})
 			if err != nil {
-				return nil, wve.ErrW(wve.NoProofFound, "failed to build", err)
+				return nil, nil, wve.ErrW(wve.NoProofFound, "failed to build", err)
 			}
 			if proofresp.Error != nil {
 				ci := &bcacheItem{
@@ -665,7 +775,7 @@ func (am *AuthModule) FormMessage(p *pb.PublishParams, routerID string) (*pb.Mes
 				am.bcachemu.Lock()
 				am.bcache[bk] = ci
 				am.bcachemu.Unlock()
-				return nil, wve.Err(wve.NoProofFound, proofresp.Error.Message)
+				return nil, nil, wve.Err(wve.NoProofFound, proofresp.Error.Message)
 			}
 
 			// encrypt proof under wavemq uri
@@ -675,10 +785,10 @@ func (am *AuthModule) FormMessage(p *pb.PublishParams, routerID string) (*pb.Mes
 				Content:   proofresp.ProofDER,
 			})
 			if err != nil {
-				return nil, wve.ErrW(wve.MessageEncryptionError, "failed to encrypt", err)
+				return nil, nil, wve.ErrW(wve.MessageEncryptionError, "failed to encrypt", err)
 			}
 			if encresp.Error != nil {
-				return nil, wve.Err(wve.MessageEncryptionError, encresp.Error.Message)
+				return nil, nil, wve.Err(wve.MessageEncryptionError, encresp.Error.Message)
 			}
 			proofder = encresp.Ciphertext
 			ci := &bcacheItem{
@@ -715,17 +825,55 @@ func (am *AuthModule) FormMessage(p *pb.PublishParams, routerID string) (*pb.Mes
 			Content:   payload,
 		})
 		if err != nil {
-			return nil, wve.ErrW(wve.MessageEncryptionError, "failed to encrypt", err)
+			return nil, nil, wve.ErrW(wve.MessageEncryptionError, "failed to encrypt", err)
 		}
 		if encresp.Error != nil {
-			return nil, wve.Err(wve.MessageEncryptionError, encresp.Error.Message)
+			return nil, nil, wve.Err(wve.MessageEncryptionError, encresp.Error.Message)
 		}
 		encryptedPayload = []*pb.PayloadObject{{Schema: "text", Content: encresp.Ciphertext}}
 	}
 
+	encresp, err := am.wave.EncryptMessage(context.Background(), &eapipb.EncryptMessageParams{
+		Namespace: p.Namespace,
+		Resource:  WAVEMQUri,
+		Content:   realhash,
+	})
+	if err != nil {
+		return nil, nil, wve.ErrW(wve.MessageEncryptionError, "failed to encrypt", err)
+	}
+	if encresp.Error != nil {
+		return nil, nil, wve.Err(wve.MessageEncryptionError, encresp.Error.Message)
+	}
+	encryptedSrcEnt := encresp.Ciphertext
+	encresp, err = am.wave.EncryptMessage(context.Background(), &eapipb.EncryptMessageParams{
+		Namespace: p.Namespace,
+		Resource:  WAVEMQUri,
+		Content:   p.Namespace,
+	})
+	if err != nil {
+		return nil, nil, wve.ErrW(wve.MessageEncryptionError, "failed to encrypt", err)
+	}
+	if encresp.Error != nil {
+		return nil, nil, wve.Err(wve.MessageEncryptionError, encresp.Error.Message)
+	}
+	encryptedNamespace := encresp.Ciphertext
+	encresp, err = am.wave.EncryptMessage(context.Background(), &eapipb.EncryptMessageParams{
+		Namespace: p.Namespace,
+		Resource:  WAVEMQUri,
+		Content:   []byte(p.Uri),
+	})
+	if err != nil {
+		return nil, nil, wve.ErrW(wve.MessageEncryptionError, "failed to encrypt", err)
+	}
+	if encresp.Error != nil {
+		return nil, nil, wve.Err(wve.MessageEncryptionError, encresp.Error.Message)
+	}
+	encryptedUri := encresp.Ciphertext
+
 	hash := sha3.New256()
-	hash.Write(p.Namespace)
-	hash.Write([]byte(p.Uri))
+	hash.Write(encryptedSrcEnt)
+	hash.Write(encryptedNamespace)
+	hash.Write(encryptedUri)
 	for _, po := range encryptedPayload {
 		hash.Write([]byte(po.Schema))
 		hash.Write(po.Content)
@@ -739,26 +887,34 @@ func (am *AuthModule) FormMessage(p *pb.PublishParams, routerID string) (*pb.Mes
 		Content:     digest,
 	})
 	if err != nil {
-		return nil, wve.ErrW(wve.InvalidSignature, "failed to sign", err)
+		return nil, nil, wve.ErrW(wve.InvalidSignature, "failed to sign", err)
 	}
 	if signresp.Error != nil {
-		return nil, wve.Err(wve.InvalidSignature, signresp.Error.Message)
+		return nil, nil, wve.Err(wve.InvalidSignature, signresp.Error.Message)
 	}
 
 	return &pb.Message{
-		Signature:           signresp.Signature,
-		Persist:             p.Persist,
-		EncryptionPartition: p.EncryptionPartition,
-		Tbs: &pb.MessageTBS{
-			SourceEntity: realhash,
-			//TODO source location
-			Namespace:    p.Namespace,
-			Uri:          p.Uri,
-			Payload:      encryptedPayload,
-			OriginRouter: routerID,
-			ProofDER:     proofder,
-		},
-	}, nil
+			Signature:           signresp.Signature,
+			Persist:             p.Persist,
+			EncryptionPartition: p.EncryptionPartition,
+			Tbs: &pb.MessageTBS{
+				SourceEntity: encryptedSrcEnt,
+				//TODO source location
+				Namespace:    encryptedNamespace,
+				Uri:          encryptedUri,
+				Payload:      encryptedPayload,
+				OriginRouter: routerID,
+				ProofDER:     proofder,
+			},
+		}, &pb.Message{
+			Persist: p.Persist,
+			Tbs: &pb.MessageTBS{
+				//TODO source location
+				Namespace:    p.Namespace,
+				Uri:          []byte(p.Uri),
+				OriginRouter: routerID,
+			},
+		}, nil
 }
 
 func (am *AuthModule) FormSubRequest(p *pb.SubscribeParams, routerID string) (*pb.PeerSubscribeParams, wve.WVE) {
@@ -886,7 +1042,21 @@ func (am *AuthModule) FormSubRequest(p *pb.SubscribeParams, routerID string) (*p
 		}
 	}
 
+	encresp, err := am.wave.EncryptMessage(context.Background(), &eapipb.EncryptMessageParams{
+		Namespace: p.Namespace,
+		Resource:  WAVEMQUri,
+		Content:   realhash,
+	})
+	if err != nil {
+		return nil, wve.ErrW(wve.MessageEncryptionError, "failed to encrypt", err)
+	}
+	if encresp.Error != nil {
+		return nil, wve.Err(wve.MessageEncryptionError, encresp.Error.Message)
+	}
+	encryptedSrcEnt := encresp.Ciphertext
+
 	hash := sha3.New256()
+	hash.Write(encryptedSrcEnt)
 	hash.Write(p.Namespace)
 	hash.Write([]byte(p.Uri))
 	hash.Write([]byte(p.Identifier))
@@ -908,7 +1078,7 @@ func (am *AuthModule) FormSubRequest(p *pb.SubscribeParams, routerID string) (*p
 	return &pb.PeerSubscribeParams{
 		Tbs: &pb.PeerSubscriptionTBS{
 			Expiry:       p.Expiry,
-			SourceEntity: realhash,
+			SourceEntity: encryptedSrcEnt,
 			Namespace:    p.Namespace,
 			Uri:          p.Uri,
 			Id:           p.Identifier,

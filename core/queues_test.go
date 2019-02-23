@@ -14,7 +14,7 @@ import (
 func mkmsg() *pb.Message {
 	m := &pb.Message{}
 	m.Tbs = &pb.MessageTBS{
-		Uri:       "a/typical/uri/sort/of/length",
+		Uri:       []byte("a/typical/uri/sort/of/length"),
 		Namespace: make([]byte, 32),
 	}
 	rand.Read(m.Tbs.Namespace)
