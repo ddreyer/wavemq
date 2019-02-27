@@ -257,7 +257,7 @@ func NewTerminus(qm *QManager, am *AuthModule, cfg *RoutingConfig) (*Terminus, e
 		if err != nil {
 			panic(err)
 		}
-		go rv.beginUpstreamPeering(q, dr)
+		go rv.beginUpstreamPeering(am, q, dr)
 	}
 
 	//ID
@@ -615,10 +615,10 @@ func (t *Terminus) downstreamPeer(ctx context.Context, q *Queue) (err error) {
 		q.Enqueue(msg.Message)
 	}
 }
-func (t *Terminus) beginUpstreamPeering(q *Queue, dr *DesignatedRouter) {
+func (t *Terminus) beginUpstreamPeering(am *AuthModule, q *Queue, dr *DesignatedRouter) {
 	for {
 		ctx, cancel := context.WithCancel(context.Background())
-		err := t.upstreamPeer(ctx, q, dr)
+		err := t.upstreamPeer(ctx, am, q, dr)
 		cancel()
 		pmPeerErrors.Add(1)
 		fmt.Printf("error peering with %s (%s): %v\n", dr.Namespace, dr.Address, err)
@@ -643,7 +643,7 @@ func (t *Terminus) ConnectionStatus() (int64, int64) {
 	return t.activeUplink, int64(len(t.drnamespaces))
 }
 
-func (t *Terminus) upstreamPeer(ctx context.Context, q *Queue, dr *DesignatedRouter) (err error) {
+func (t *Terminus) upstreamPeer(ctx context.Context, am *AuthModule, q *Queue, dr *DesignatedRouter) (err error) {
 	t.uplinkConnMu.Lock()
 	delete(t.uplinkConns, dr.Namespace)
 	t.uplinkConnMu.Unlock()
@@ -706,6 +706,12 @@ func (t *Terminus) upstreamPeer(ctx context.Context, q *Queue, dr *DesignatedRou
 					subctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 					pmUpstreamMessages.Add(1)
 					resp, err := peer.PeerPublish(subctx, &pb.PeerPublishParams{
+						Perspective: &pb.Perspective{
+							EntitySecret: &pb.EntitySecret{
+								DER:        am.ourPerspective.EntitySecret.DER,
+								Passphrase: am.ourPerspective.EntitySecret.Passphrase,
+							},
+						},
 						Msg: m,
 					})
 					cancel()

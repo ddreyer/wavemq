@@ -56,7 +56,8 @@ message PeerUnsubscribeResponse {
   Error error = 1;
 }
 message PeerPublishParams {
-  Message msg = 1;
+  Perspective perspective = 1;
+  Message msg = 2;
 }
 message PeerPublishResponse {
   Error error = 1;

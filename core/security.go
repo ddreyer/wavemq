@@ -233,7 +233,7 @@ func (am *AuthModule) SetRouterEntityFile(filename string) error {
 }
 
 //This checks that a publish message is authorized for the given URI
-func (am *AuthModule) CheckMessage(m *pb.Message) wve.WVE {
+func (am *AuthModule) CheckMessage(persp *pb.Perspective, m *pb.Message) wve.WVE {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 
 	if m.Tbs == nil {
@@ -288,8 +288,14 @@ func (am *AuthModule) CheckMessage(m *pb.Message) wve.WVE {
 		//fmt.Printf("returning message invalid from cache\n")
 		return wve.Err(wve.ProofInvalid, "this proof has been cached as invalid\n")
 	}
+	perspective := &eapipb.Perspective{
+		EntitySecret: &eapipb.EntitySecret{
+			DER:        persp.EntitySecret.DER,
+			Passphrase: persp.EntitySecret.Passphrase,
+		},
+	}
 	decresp, err := am.wave.DecryptMessage(context.Background(), &eapipb.DecryptMessageParams{
-		Perspective: am.ourPerspective,
+		Perspective: perspective,
 		Ciphertext:  m.Tbs.ProofDER,
 	})
 	if err != nil {

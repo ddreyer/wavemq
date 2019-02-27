@@ -102,20 +102,6 @@ wv rtgrant --attester namespace.ent --subject service.ent --expiry 1y "wavemq:su
 wv rtgrant --attester namespace.ent --subject service.ent --expiry 1y "wave:decrypt@namespace.ent/*"
 ```
 
-Then you need to create an entity for your site router:
-
-```bash
-wv mke -o router.ent --expiry 1y
-```
-
-Then you need to grant your site router the permission to decrypt on the namespace:
-
-```bash
-wv rtgrant --attester namespace.ent --subject router.ent --expiry 1y "wave:decrypt@namespace.ent/wavemq" 
-```
-
-Copy `router.ent` to `/etc/wavemq/router.ent` on the site router.
-
 Then you follow [the example](https://github.com/immesys/wavemq/tree/master/example) and fill in the namespace hash and entity file you are using. If you run the example, it should print out hello world five times then exit.
 
 ## Getting started: creating a designated router

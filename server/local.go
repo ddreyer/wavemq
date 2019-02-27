@@ -170,7 +170,7 @@ func (s *srv) Query(p *pb.QueryParams, r pb.WAVEMQ_QueryServer) error {
 		}
 
 		//Validate the message
-		err = s.am.CheckMessage(msg.Message)
+		err = s.am.CheckMessage(p.Perspective, msg.Message)
 		if err != nil {
 			pmFailedProofs.Add(1)
 			lg.Info("dropping query message: %v", err)
@@ -247,7 +247,7 @@ func (s *srv) Subscribe(p *pb.SubscribeParams, r pb.WAVEMQ_SubscribeServer) erro
 			}
 			it = pb.ShallowCloneMessageForDrops(it)
 			it.Drops = append(it.Drops, q.Drops())
-			err := s.am.CheckMessage(it)
+			err := s.am.CheckMessage(p.Perspective, it)
 			if err != nil {
 				pmFailedProofs.Add(1)
 				lg.Infof("dropping message in subscribe %q due to invalid proof", it.Tbs.Uri)

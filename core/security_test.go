@@ -252,11 +252,6 @@ func TestMessage(t *testing.T) {
 	am.wave.PublishEntity(context.Background(), &pb.PublishEntityParams{
 		DER: ent.PublicDER,
 	})
-	router, err := am.wave.CreateEntity(context.Background(), &pb.CreateEntityParams{})
-	require.NoError(t, err)
-	am.wave.PublishEntity(context.Background(), &pb.PublishEntityParams{
-		DER: router.PublicDER,
-	})
 	attresp, err := am.wave.CreateAttestation(context.Background(), &pb.CreateAttestationParams{
 		Perspective: &pb.Perspective{
 			EntitySecret: &pb.EntitySecret{
@@ -296,15 +291,9 @@ func TestMessage(t *testing.T) {
 	require.NoError(t, err)
 
 	//validate
-	try1 := am.CheckMessage(msg)
+	try1 := am.CheckMessage(persp, msg)
 	require.Error(t, try1)
 
-	am.ourPerspective = &pb.Perspective{
-		EntitySecret: &pb.EntitySecret{
-			DER: router.SecretDER,
-		},
-	}
-	am.perspectiveHash = router.Hash
 	attresp, err = am.wave.CreateAttestation(context.Background(), &pb.CreateAttestationParams{
 		Perspective: &pb.Perspective{
 			EntitySecret: &pb.EntitySecret{
@@ -312,7 +301,7 @@ func TestMessage(t *testing.T) {
 			},
 		},
 		Publish:     true,
-		SubjectHash: am.perspectiveHash,
+		SubjectHash: ent.Hash,
 		Policy: &pb.Policy{
 			RTreePolicy: &pb.RTreePolicy{
 				Namespace: ns.Hash,
@@ -328,8 +317,14 @@ func TestMessage(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Nil(t, attresp.Error)
+
+	wavepersp := &pb.Perspective{
+		EntitySecret: &pb.EntitySecret{
+			DER: ent.SecretDER,
+		},
+	}
 	resp, err := am.wave.ResyncPerspectiveGraph(context.Background(), &pb.ResyncPerspectiveGraphParams{
-		Perspective: am.ourPerspective,
+		Perspective: wavepersp,
 	})
 	if err != nil {
 		panic(err)
@@ -338,16 +333,16 @@ func TestMessage(t *testing.T) {
 		panic(resp.Error.Message)
 	}
 	err = am.wave.WaitForSyncCompleteHack(&pb.SyncParams{
-		Perspective: am.ourPerspective,
+		Perspective: wavepersp,
 	})
 	if err != nil {
 		panic(err)
 	}
 
 	//validate
-	try1 = am.CheckMessage(msg)
+	try1 = am.CheckMessage(persp, msg)
 	require.NoError(t, try1)
-	try2 := am.CheckMessage(msg)
+	try2 := am.CheckMessage(persp, msg)
 	require.NoError(t, try2)
 
 	//prepare
@@ -371,11 +366,7 @@ func TestEncryptedMessage(t *testing.T) {
 	am.wave.PublishEntity(context.Background(), &pb.PublishEntityParams{
 		DER: ent.PublicDER,
 	})
-	router, err := am.wave.CreateEntity(context.Background(), &pb.CreateEntityParams{})
-	require.NoError(t, err)
-	am.wave.PublishEntity(context.Background(), &pb.PublishEntityParams{
-		DER: router.PublicDER,
-	})
+
 	attresp, err := am.wave.CreateAttestation(context.Background(), &pb.CreateAttestationParams{
 		Perspective: &pb.Perspective{
 			EntitySecret: &pb.EntitySecret{
@@ -417,15 +408,9 @@ func TestEncryptedMessage(t *testing.T) {
 	require.NoError(t, err)
 
 	//validate
-	try1 := am.CheckMessage(msg)
+	try1 := am.CheckMessage(persp, msg)
 	require.Error(t, try1)
 
-	am.ourPerspective = &pb.Perspective{
-		EntitySecret: &pb.EntitySecret{
-			DER: router.SecretDER,
-		},
-	}
-	am.perspectiveHash = router.Hash
 	attresp, err = am.wave.CreateAttestation(context.Background(), &pb.CreateAttestationParams{
 		Perspective: &pb.Perspective{
 			EntitySecret: &pb.EntitySecret{
@@ -433,7 +418,7 @@ func TestEncryptedMessage(t *testing.T) {
 			},
 		},
 		Publish:     true,
-		SubjectHash: am.perspectiveHash,
+		SubjectHash: ent.Hash,
 		Policy: &pb.Policy{
 			RTreePolicy: &pb.RTreePolicy{
 				Namespace: ns.Hash,
@@ -449,8 +434,14 @@ func TestEncryptedMessage(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Nil(t, attresp.Error)
+
+	wavepersp := &pb.Perspective{
+		EntitySecret: &pb.EntitySecret{
+			DER: ent.SecretDER,
+		},
+	}
 	resp, err := am.wave.ResyncPerspectiveGraph(context.Background(), &pb.ResyncPerspectiveGraphParams{
-		Perspective: am.ourPerspective,
+		Perspective: wavepersp,
 	})
 	if err != nil {
 		panic(err)
@@ -459,16 +450,16 @@ func TestEncryptedMessage(t *testing.T) {
 		panic(resp.Error.Message)
 	}
 	err = am.wave.WaitForSyncCompleteHack(&pb.SyncParams{
-		Perspective: am.ourPerspective,
+		Perspective: wavepersp,
 	})
 	if err != nil {
 		panic(err)
 	}
 
 	// validate
-	try1 = am.CheckMessage(msg)
+	try1 = am.CheckMessage(persp, msg)
 	require.NoError(t, try1)
-	try2 := am.CheckMessage(msg)
+	try2 := am.CheckMessage(persp, msg)
 	require.NoError(t, try2)
 
 	// prepare
@@ -559,7 +550,7 @@ func BenchmarkCheckMessage(t *testing.B) {
 	fmt.Printf("===== BEGIN <<<<\n")
 	for i := 0; i < t.N; i++ {
 		//validate
-		try1 := am.CheckMessage(msg)
+		try1 := am.CheckMessage(persp, msg)
 		require.NoError(t, try1)
 	}
 	fmt.Printf("===== END >>>>>>\n")
