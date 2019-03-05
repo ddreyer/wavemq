@@ -1,5 +1,12 @@
 package core
 
+/*
+#include "enclave_app.h"
+#cgo CFLAGS: -I/home/sgx/wave-verify-sgx2/enclave_plus_app_src -I/home/sgx/wave-verify-sgx2/utils -I/home/sgx/linux-sgx/linux/installer/bin/sgxsdk/include
+#cgo LDFLAGS: -L/home/sgx/wave-verify-sgx2/enclave_plus_app_src -lverify
+*/
+import "C"
+
 import (
 	"bytes"
 	"context"
@@ -10,17 +17,21 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"bitbucket.org/creachadair/cityhash"
 	"github.com/huichen/murmur"
+	"github.com/immesys/asn1"
 	"github.com/immesys/wave/eapi"
 	eapipb "github.com/immesys/wave/eapi/pb"
 	"github.com/immesys/wave/iapi"
 	"github.com/immesys/wave/localdb/lls"
 	"github.com/immesys/wave/localdb/poc"
+	"github.com/immesys/wave/serdes"
 	"github.com/immesys/wave/storage/overlay"
 	"github.com/immesys/wave/waved"
 	"github.com/immesys/wave/wve"
@@ -232,6 +243,66 @@ func (am *AuthModule) SetRouterEntityFile(filename string) error {
 	return nil
 }
 
+func InitEnclave() {
+	// initialize enclave
+	fmt.Println("initializing enclave")
+	if ret := C.init_enclave(); ret != 0 {
+		fmt.Printf("failed to initialize enclave\n")
+		os.Exit(1)
+	}
+	fmt.Println("done initializing enclave")
+}
+
+func enclaveVerify(ns []byte, subj []byte, resource string, proofDER []byte, perms []string) (int64, wve.WVE) {
+	ehash := iapi.HashSchemeInstanceFromMultihash(ns)
+	if !ehash.Supported() {
+		return -1, wve.Err(wve.InvalidParameter, "bad namespace")
+	}
+	ext := ehash.CanonicalForm()
+
+	phash := iapi.HashSchemeInstanceFromMultihash([]byte(WAVEMQPermissionSet))
+	if !phash.Supported() {
+		return -1, wve.Err(wve.InvalidParameter, "bad permissionset")
+	}
+	pext := phash.CanonicalForm()
+
+	spol := serdes.RTreePolicy{
+		Namespace: *ext,
+		Statements: []serdes.RTreeStatement{
+			{
+				PermissionSet: *pext,
+				Permissions:   perms,
+				Resource:      resource,
+			},
+		},
+	}
+	//This is not important
+	nsloc := iapi.NewLocationSchemeInstanceURL("https://foo.com", 1).CanonicalForm()
+	spol.NamespaceLocation = *nsloc
+
+	wrappedPol := serdes.WaveWireObject{
+		Content: asn1.NewExternal(spol),
+	}
+	polBytes, err := asn1.Marshal(wrappedPol.Content)
+	if err != nil {
+		return -1, wve.ErrW(wve.InternalError, "could not marshal policy", err)
+	}
+
+	polDER := (*C.char)(unsafe.Pointer(&polBytes[0]))
+	subject := (*C.char)(unsafe.Pointer(&subj[2]))
+	DER := (*C.char)(unsafe.Pointer(&proofDER[0]))
+	CExpiry := C.verify(DER, C.ulong(len(proofDER)), subject, C.ulong(len(subj)-2),
+		polDER, C.ulong(len(polBytes)))
+	if int64(CExpiry) == -1 {
+		return -1, nil
+	}
+	expiryStr := strconv.FormatInt(int64(CExpiry), 10)
+	proofExpiry := fmt.Sprintf("20%s-%s-%sT%s:%s:%sZ", expiryStr[0:2], expiryStr[2:4],
+		expiryStr[4:6], expiryStr[6:8], expiryStr[8:10], expiryStr[10:12])
+	proofTime, _ := time.Parse(time.RFC3339, proofExpiry)
+	return proofTime.Unix(), nil
+}
+
 //This checks that a publish message is authorized for the given URI
 func (am *AuthModule) CheckMessage(persp *pb.Perspective, m *pb.Message) wve.WVE {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -306,35 +377,22 @@ func (am *AuthModule) CheckMessage(persp *pb.Perspective, m *pb.Message) wve.WVE
 	}
 	decryptedProof := decresp.Content
 
-	presp, err := am.wave.VerifyProof(ctx, &eapipb.VerifyProofParams{
-		ProofDER: decryptedProof,
-		Subject:  m.Tbs.SourceEntity,
-		RequiredRTreePolicy: &eapipb.RTreePolicy{
-			Namespace: m.Tbs.Namespace,
-			Statements: []*eapipb.RTreePolicyStatement{
-				{
-					PermissionSet: []byte(WAVEMQPermissionSet),
-					Permissions:   []string{WAVEMQPublish},
-					Resource:      m.Tbs.Uri,
-				},
-			},
-		},
-	})
+	proofExpiry, eErr := enclaveVerify(m.Tbs.Namespace, m.Tbs.SourceEntity, m.Tbs.Uri, decryptedProof, []string{WAVEMQPublish})
 	cancel()
-	if err != nil {
-		return wve.ErrW(wve.InternalError, "could not validate proof", err)
+	if eErr != nil {
+		return eErr
 	}
-	if presp.Error != nil {
+	if proofExpiry == -1 {
 		am.icachemu.Lock()
 		am.icache[ick] = &icacheItem{
 			CacheExpiry: time.Now().Add(ValidatedProofMaxCacheTime),
 			Valid:       false,
 		}
 		am.icachemu.Unlock()
-		return wve.Err(wve.ProofInvalid, presp.Error.Message)
+		return wve.Err(wve.EnclaveError, "failed to C verify proof")
 	}
 
-	expiry := time.Unix(0, presp.Result.Expiry*1e6)
+	expiry := time.Unix(proofExpiry, 0)
 	if expiry.After(time.Now().Add(ValidatedProofMaxCacheTime)) {
 		expiry = time.Now().Add(ValidatedProofMaxCacheTime)
 	}
@@ -423,11 +481,17 @@ func (am *AuthModule) CheckSubscription(s *pb.PeerSubscribeParams) wve.WVE {
 			},
 		},
 	})
-	cancel()
-	if err != nil {
-		return wve.ErrW(wve.InternalError, "could not validate proof", err)
+	if presp != nil {
+		return nil
 	}
-	if presp.Error != nil {
+	// _, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+	proofExpiry, eErr := enclaveVerify(s.Tbs.Namespace, s.Tbs.SourceEntity, s.Tbs.Uri, decryptedProof, []string{WAVEMQPublish})
+	cancel()
+	if eErr != nil {
+		return eErr
+	}
+	if proofExpiry == -1 {
 		entry := &icacheItem{
 			CacheExpiry: time.Now().Add(ValidatedProofMaxCacheTime),
 			Valid:       false,
@@ -435,22 +499,22 @@ func (am *AuthModule) CheckSubscription(s *pb.PeerSubscribeParams) wve.WVE {
 		am.icachemu.Lock()
 		am.icache[ick] = entry
 		am.icachemu.Unlock()
-		return wve.Err(wve.ProofInvalid, presp.Error.Message)
+		return wve.Err(wve.EnclaveError, "failed to C verify proof")
 	}
 
-	fmt.Printf("proof expiry is %s\n", time.Unix(0, presp.Result.Expiry*1e6))
+	fmt.Printf("proof expiry is %s\n", time.Unix(proofExpiry, 0))
 
 	entry = &icacheItem{
 		CacheExpiry: time.Now().Add(ValidatedProofMaxCacheTime),
 		Valid:       true,
-		ProofExpiry: time.Unix(0, presp.Result.Expiry*1e6),
+		ProofExpiry: time.Unix(proofExpiry, 0),
 	}
 	am.icachemu.Lock()
 	am.icache[ick] = entry
 	am.icachemu.Unlock()
 	//If the user did not specify an absolute expiry, or specified one greater than
 	//the proof allows, then set the field to the proof's expiry
-	if s.AbsoluteExpiry == 0 || s.AbsoluteExpiry > presp.Result.Expiry {
+	if s.AbsoluteExpiry == 0 || s.AbsoluteExpiry > proofExpiry {
 		s.AbsoluteExpiry = entry.ProofExpiry.UnixNano()
 	}
 	return nil
@@ -496,26 +560,14 @@ func (am *AuthModule) CheckQuery(s *pb.PeerQueryParams) wve.WVE {
 		}
 		return wve.Err(wve.ProofInvalid, "this proof has been cached as invalid\n")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	presp, err := am.wave.VerifyProof(ctx, &eapipb.VerifyProofParams{
-		ProofDER: s.ProofDER,
-		Subject:  s.SourceEntity,
-		RequiredRTreePolicy: &eapipb.RTreePolicy{
-			Namespace: s.Namespace,
-			Statements: []*eapipb.RTreePolicyStatement{
-				{
-					PermissionSet: []byte(WAVEMQPermissionSet),
-					Permissions:   []string{WAVEMQQuery},
-					Resource:      s.Uri,
-				},
-			},
-		},
-	})
+	_, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+	proofExpiry, eErr := enclaveVerify(s.Namespace, s.SourceEntity, s.Uri, s.ProofDER, []string{WAVEMQPublish})
 	cancel()
-	if err != nil {
-		return wve.ErrW(wve.InternalError, "could not validate proof", err)
+	if eErr != nil {
+		return eErr
 	}
-	if presp.Error != nil {
+	if proofExpiry == -1 {
 		entry := &icacheItem{
 			CacheExpiry: time.Now().Add(ValidatedProofMaxCacheTime),
 			Valid:       false,
@@ -523,13 +575,13 @@ func (am *AuthModule) CheckQuery(s *pb.PeerQueryParams) wve.WVE {
 		am.icachemu.Lock()
 		am.icache[ick] = entry
 		am.icachemu.Unlock()
-		return wve.Err(wve.ProofInvalid, presp.Error.Message)
+		return wve.Err(wve.EnclaveError, "failed to C verify proof")
 	}
 
 	entry = &icacheItem{
 		CacheExpiry: time.Now().Add(ValidatedProofMaxCacheTime),
 		Valid:       true,
-		ProofExpiry: time.Unix(0, presp.Result.Expiry*1e6),
+		ProofExpiry: time.Unix(proofExpiry, 0),
 	}
 	am.icachemu.Lock()
 	am.icache[ick] = entry
