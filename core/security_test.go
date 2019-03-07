@@ -534,6 +534,30 @@ func BenchmarkCheckMessage(t *testing.B) {
 	require.NoError(t, err)
 	require.Nil(t, attresp.Error)
 
+	attresp, err = am.wave.CreateAttestation(context.Background(), &pb.CreateAttestationParams{
+		Perspective: &pb.Perspective{
+			EntitySecret: &pb.EntitySecret{
+				DER: ns.SecretDER,
+			},
+		},
+		Publish:     true,
+		SubjectHash: ent.Hash,
+		Policy: &pb.Policy{
+			RTreePolicy: &pb.RTreePolicy{
+				Namespace: ns.Hash,
+				Statements: []*pb.RTreePolicyStatement{
+					{
+						PermissionSet: []byte(consts.WaveBuiltinPSET),
+						Permissions:   []string{consts.WaveBuiltinE2EE},
+						Resource:      WAVEMQUri,
+					},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Nil(t, attresp.Error)
+
 	persp := &mqpb.Perspective{
 		EntitySecret: &mqpb.EntitySecret{
 			DER: ent.SecretDER,
