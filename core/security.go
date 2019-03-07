@@ -292,6 +292,16 @@ func enclaveVerify(ns []byte, subj []byte, resource string, proofDER []byte, per
 	return proofTime.Unix(), nil
 }
 
+func InitEnclave() {
+	// initialize enclave
+	fmt.Println("initializing enclave")
+	if ret := C.init_enclave(); ret != 0 {
+		fmt.Printf("failed to initialize enclave\n")
+		os.Exit(1)
+	}
+	fmt.Println("done initializing enclave")
+}
+
 //This checks that a publish message is authorized for the given URI
 func (am *AuthModule) CheckMessage(m *pb.Message) wve.WVE {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

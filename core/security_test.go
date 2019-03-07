@@ -34,6 +34,7 @@ var am *AuthModule
 
 func init() {
 	am = getam()
+	InitEnclave()
 }
 
 func TestSubProof(t *testing.T) {
