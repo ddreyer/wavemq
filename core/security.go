@@ -2,8 +2,8 @@ package core
 
 /*
 #include "enclave_app.h"
-#cgo CFLAGS: -I/home/sgx/wave-verify-sgx2/enclave_plus_app_src -I/home/sgx/wave-verify-sgx2/utils -I/home/sgx/linux-sgx/linux/installer/bin/sgxsdk/include
-#cgo LDFLAGS: -L/home/sgx/wave-verify-sgx2/enclave_plus_app_src -lverify
+#cgo CFLAGS: -I/home/sgx/wave-verify-sgx/enclave_plus_app_src -I/home/sgx/wave-verify-sgx/utils -I/home/sgx/linux-sgx/linux/installer/bin/sgxsdk/include
+#cgo LDFLAGS: /home/sgx/wave-verify-sgx/enclave_plus_app_src/libverify.so
 */
 import "C"
 
@@ -435,7 +435,7 @@ func (am *AuthModule) CheckSubscription(s *pb.PeerSubscribeParams) wve.WVE {
 	}
 	_, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 
-	proofExpiry, eErr := enclaveVerify(s.Tbs.Namespace, s.Tbs.SourceEntity, s.Tbs.Uri, s.ProofDER, []string{WAVEMQPublish})
+	proofExpiry, eErr := enclaveVerify(s.Tbs.Namespace, s.Tbs.SourceEntity, s.Tbs.Uri, s.ProofDER, []string{WAVEMQSubscribe})
 	cancel()
 	if eErr != nil {
 		return eErr

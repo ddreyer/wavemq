@@ -2,8 +2,8 @@ package main
 
 /*
 #include "enclave_app.h"
-#cgo CFLAGS: -I/home/sgx/wave-verify-sgx2/enclave_plus_app_src -I/home/sgx/wave-verify-sgx2/utils -I/home/sgx/linux-sgx/linux/installer/bin/sgxsdk/include
-#cgo LDFLAGS: -L/home/sgx/wave-verify-sgx2/enclave_plus_app_src -lverify
+#cgo CFLAGS: -I/home/sgx/wave-verify-sgx/enclave_plus_app_src -I/home/sgx/wave-verify-sgx/utils -I/home/sgx/linux-sgx/linux/installer/bin/sgxsdk/include
+#cgo LDFLAGS: /home/sgx/wave-verify-sgx/enclave_plus_app_src/libverify.so
 */
 import "C"
 
@@ -86,7 +86,6 @@ func main() {
 	}
 	server.NewLocalServer(tm, am, &conf.LocalConfig)
 	server.NewPeerServer(tm, am, &conf.PeerConfig)
-	server.NewProvisionServer("127.0.0.1:4517")
 
 	// initialize enclave
 	fmt.Println("initializing enclave")
