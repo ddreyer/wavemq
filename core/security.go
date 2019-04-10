@@ -78,6 +78,7 @@ type icacheItem struct {
 	CacheExpiry time.Time
 	ProofExpiry time.Time
 	Valid       bool
+	DER         []byte
 }
 
 type bcacheKey struct {
@@ -265,7 +266,7 @@ func (am *AuthModule) provisionKey(perspective *eapipb.Perspective, ns []byte) {
 //This checks that a publish message is authorized for the given URI
 func (am *AuthModule) CheckMessage(persp *pb.Perspective, m *pb.Message) wve.WVE {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-
+	defer cancel()
 	if m.Tbs == nil {
 		return wve.Err(wve.InvalidParameter, "message missing TBS")
 	}
@@ -301,11 +302,14 @@ func (am *AuthModule) CheckMessage(persp *pb.Perspective, m *pb.Message) wve.WVE
 	ick.URI = m.Tbs.Uri
 	ick.Permission = WAVEMQPublish
 
-	ick.ProofLow, ick.ProofHigh = cityhash.Hash128(m.Tbs.ProofDER)
+	elidedProof := len(m.Tbs.ProofDER) == 0 && len(m.ProofHash) == 16
 
-	// h := sha3.NewShake256()
-	// h.Write(m.ProofDER)
-	// h.Read(ick.ProofHash[:])
+	if elidedProof {
+		ick.ProofHigh = binary.BigEndian.Uint64(m.ProofHash[0:8])
+		ick.ProofLow = binary.BigEndian.Uint64(m.ProofHash[8:16])
+	} else {
+		ick.ProofLow, ick.ProofHigh = cityhash.Hash128(m.Tbs.ProofDER)
+	}
 
 	am.icachemu.Lock()
 	entry, ok := am.icache[ick]
@@ -313,10 +317,17 @@ func (am *AuthModule) CheckMessage(persp *pb.Perspective, m *pb.Message) wve.WVE
 	if ok && entry.CacheExpiry.After(time.Now()) {
 		if entry.Valid {
 			//fmt.Printf("returning message valid from cache\n")
+			if elidedProof {
+				m.Tbs.ProofDER = entry.DER
+			}
 			return nil
 		}
 		//fmt.Printf("returning message invalid from cache\n")
-		return wve.Err(wve.ProofInvalid, "this proof has been cached as invalid\n")
+		return wve.Err(wve.ProofInvalid, "this proof has been cached as invalid")
+	} else {
+		if elidedProof {
+			return wve.Err(wve.ProofNotCached, "send the full proof please")
+		}
 	}
 
 	decryptedProof, err := iapi.DecryptProofWithKey(context.Background(), &iapi.PDecryptProof{
@@ -342,7 +353,6 @@ func (am *AuthModule) CheckMessage(persp *pb.Perspective, m *pb.Message) wve.WVE
 			},
 		},
 	})
-	cancel()
 	if err != nil {
 		return wve.ErrW(wve.InternalError, "could not validate proof", err)
 	}
@@ -351,6 +361,7 @@ func (am *AuthModule) CheckMessage(persp *pb.Perspective, m *pb.Message) wve.WVE
 		am.icache[ick] = &icacheItem{
 			CacheExpiry: time.Now().Add(ValidatedProofMaxCacheTime),
 			Valid:       false,
+			DER:         m.Tbs.ProofDER,
 		}
 		am.icachemu.Unlock()
 		return wve.Err(wve.ProofInvalid, presp.Error.Message)
@@ -364,6 +375,7 @@ func (am *AuthModule) CheckMessage(persp *pb.Perspective, m *pb.Message) wve.WVE
 	am.icache[ick] = &icacheItem{
 		CacheExpiry: expiry,
 		Valid:       true,
+		DER:         m.Tbs.ProofDER,
 	}
 	am.icachemu.Unlock()
 	return nil
@@ -418,18 +430,14 @@ func (am *AuthModule) CheckSubscription(s *pb.PeerSubscribeParams) wve.WVE {
 		return wve.Err(wve.ProofInvalid, "this proof has been cached as invalid\n")
 	}
 
-	decresp, err := am.wave.DecryptProof(context.Background(), &eapipb.DecryptProofParams{
-		Perspective: am.ourPerspective,
-		Ciphertext:  s.Tbs.ProofDER,
-		Namespace:   s.Tbs.Namespace,
+	decryptedProof, err := iapi.DecryptProofWithKey(context.Background(), &iapi.PDecryptProof{
+		Ciphertext: s.Tbs.ProofDER,
+		Key:        key,
+		Id:         id,
 	})
 	if err != nil {
 		return wve.ErrW(wve.MessageDecryptionError, "failed to decrypt", err)
 	}
-	if decresp.Error != nil {
-		return wve.Err(wve.MessageDecryptionError, decresp.Error.Message)
-	}
-	decryptedProof := decresp.Content
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	presp, err := am.wave.VerifyProof(ctx, &eapipb.VerifyProofParams{
@@ -467,6 +475,7 @@ func (am *AuthModule) CheckSubscription(s *pb.PeerSubscribeParams) wve.WVE {
 		CacheExpiry: time.Now().Add(ValidatedProofMaxCacheTime),
 		Valid:       true,
 		ProofExpiry: time.Unix(0, presp.Result.Expiry*1e6),
+		DER:         s.Tbs.ProofDER,
 	}
 	am.icachemu.Lock()
 	am.icache[ick] = entry
@@ -553,6 +562,7 @@ func (am *AuthModule) CheckQuery(s *pb.PeerQueryParams) wve.WVE {
 		CacheExpiry: time.Now().Add(ValidatedProofMaxCacheTime),
 		Valid:       true,
 		ProofExpiry: time.Unix(0, presp.Result.Expiry*1e6),
+		DER:         s.ProofDER,
 	}
 	am.icachemu.Lock()
 	am.icache[ick] = entry
@@ -572,22 +582,36 @@ func (am *AuthModule) PrepareMessage(persp *pb.Perspective, m *pb.Message) (*pb.
 	}
 	decryptedPayload := m.Tbs.Payload
 	if m.EncryptionPartition != nil {
-		payload := []byte{}
+		decryptedPayload = []*pb.PayloadObject{}
 		for _, po := range m.Tbs.Payload {
-			payload = append(payload, po.Content...)
+			decresp, err := am.wave.DecryptMessage(context.Background(), &eapipb.DecryptMessageParams{
+				Perspective: perspective,
+				Ciphertext:  po.Content,
+			})
+			if err != nil {
+				return nil, wve.ErrW(wve.MessageDecryptionError, "failed to decrypt", err)
+			}
+			if decresp.Error != nil && decresp.Error.Code == 913 {
+				//This could be because we did not resync, try again with resync
+				decresp, err = am.wave.DecryptMessage(context.Background(), &eapipb.DecryptMessageParams{
+					Perspective: perspective,
+					Ciphertext:  po.Content,
+					ResyncFirst: true,
+				})
+				if err != nil {
+					return nil, wve.ErrW(wve.MessageDecryptionError, "failed to decrypt", err)
+				}
+				if decresp.Error != nil {
+					return nil, wve.Err(wve.MessageDecryptionError, decresp.Error.Message)
+				}
+			} else if decresp.Error != nil {
+				return nil, wve.Err(wve.MessageDecryptionError, decresp.Error.Message)
+			}
+			decryptedPayload = append(decryptedPayload, &pb.PayloadObject{
+				Schema:  po.Schema,
+				Content: decresp.Content,
+			})
 		}
-		decresp, err := am.wave.DecryptMessage(context.Background(), &eapipb.DecryptMessageParams{
-			Perspective: perspective,
-			Ciphertext:  payload,
-			ResyncFirst: true,
-		})
-		if err != nil {
-			return nil, wve.ErrW(wve.MessageDecryptionError, "failed to decrypt", err)
-		}
-		if decresp.Error != nil {
-			return nil, wve.Err(wve.MessageDecryptionError, decresp.Error.Message)
-		}
-		decryptedPayload = []*pb.PayloadObject{{Schema: "text", Content: decresp.Content}}
 	}
 	return &pb.Message{
 		Signature:           m.Signature,
@@ -730,27 +754,29 @@ func (am *AuthModule) FormMessage(p *pb.PublishParams, routerID string) (*pb.Mes
 
 	encryptedPayload := p.Content
 	if p.EncryptionPartition != nil {
-		payload := []byte{}
-		for _, po := range p.Content {
-			payload = append(payload, po.Content...)
-		}
 		chunks := []string{}
 		for _, chunk := range p.EncryptionPartition {
 			chunks = append(chunks, string(chunk))
 		}
 		partition := strings.Join(chunks[:], "/")
-		encresp, err := am.wave.EncryptMessage(context.Background(), &eapipb.EncryptMessageParams{
-			Namespace: p.Namespace,
-			Resource:  partition,
-			Content:   payload,
-		})
-		if err != nil {
-			return nil, wve.ErrW(wve.MessageEncryptionError, "failed to encrypt", err)
+		encryptedPayload = []*pb.PayloadObject{}
+		for _, po := range p.Content {
+			encresp, err := am.wave.EncryptMessage(context.Background(), &eapipb.EncryptMessageParams{
+				Namespace: p.Namespace,
+				Resource:  partition,
+				Content:   po.Content,
+			})
+			if err != nil {
+				return nil, wve.ErrW(wve.MessageEncryptionError, "failed to encrypt", err)
+			}
+			if encresp.Error != nil {
+				return nil, wve.Err(wve.MessageEncryptionError, encresp.Error.Message)
+			}
+			encryptedPayload = append(encryptedPayload, &pb.PayloadObject{
+				Schema:  po.Schema,
+				Content: encresp.Ciphertext,
+			})
 		}
-		if encresp.Error != nil {
-			return nil, wve.Err(wve.MessageEncryptionError, encresp.Error.Message)
-		}
-		encryptedPayload = []*pb.PayloadObject{{Schema: "text", Content: encresp.Ciphertext}}
 	}
 
 	hash := sha3.New256()
@@ -908,6 +934,9 @@ func (am *AuthModule) FormSubRequest(p *pb.SubscribeParams, routerID string) (*p
 				expiry = time.Unix(0, p.AbsoluteExpiry)
 			}
 		} else {
+			if !cachedproof.Valid {
+				return nil, wve.Err(wve.NoProofFound, "we've cached that there is no proof for this")
+			}
 			proofder = cachedproof.DER
 			expiry = cachedproof.ProofExpiry
 			if p.AbsoluteExpiry != 0 && expiry.After(time.Unix(0, p.AbsoluteExpiry)) {
@@ -1138,7 +1167,7 @@ func (am *AuthModule) VerifyServerHandshake(nsString string, entityHash []byte, 
 		return err
 	}
 	if presp.Error != nil {
-		return errors.New(resp.Error.Message)
+		return errors.New(presp.Error.Message)
 	}
 	if !bytes.Equal(presp.Result.Subject, entityHash) {
 		return errors.New("proof valid but for a different entity")

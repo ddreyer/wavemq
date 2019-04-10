@@ -42,15 +42,15 @@ func TestSubProof(t *testing.T) {
 	am.wave.PublishEntity(context.Background(), &pb.PublishEntityParams{
 		DER: ns.PublicDER,
 	})
+	am.provisionKey(&pb.Perspective{
+		EntitySecret: &pb.EntitySecret{
+			DER: ns.SecretDER,
+		},
+	}, ns.Hash)
 	ent, err := am.wave.CreateEntity(context.Background(), &pb.CreateEntityParams{})
 	require.NoError(t, err)
 	am.wave.PublishEntity(context.Background(), &pb.PublishEntityParams{
 		DER: ent.PublicDER,
-	})
-	router, err := am.wave.CreateEntity(context.Background(), &pb.CreateEntityParams{})
-	require.NoError(t, err)
-	am.wave.PublishEntity(context.Background(), &pb.PublishEntityParams{
-		DER: router.PublicDER,
 	})
 	attresp, err := am.wave.CreateAttestation(context.Background(), &pb.CreateAttestationParams{
 		Perspective: &pb.Perspective{
@@ -89,53 +89,6 @@ func TestSubProof(t *testing.T) {
 	}, "lol")
 
 	require.NoError(t, err)
-	err = am.CheckSubscription(subreq)
-	require.Error(t, err)
-
-	am.ourPerspective = &pb.Perspective{
-		EntitySecret: &pb.EntitySecret{
-			DER: router.SecretDER,
-		},
-	}
-	// am.perspectiveHash = router.Hash
-	// attresp, err = am.wave.CreateAttestation(context.Background(), &pb.CreateAttestationParams{
-	// 	Perspective: &pb.Perspective{
-	// 		EntitySecret: &pb.EntitySecret{
-	// 			DER: ns.SecretDER,
-	// 		},
-	// 	},
-	// 	Publish:     true,
-	// 	SubjectHash: am.perspectiveHash,
-	// 	Policy: &pb.Policy{
-	// 		RTreePolicy: &pb.RTreePolicy{
-	// 			Namespace: ns.Hash,
-	// 			Statements: []*pb.RTreePolicyStatement{
-	// 				{
-	// 					PermissionSet: []byte(consts.WaveBuiltinPSET),
-	// 					Permissions:   []string{consts.WaveBuiltinE2EE},
-	// 					Resource:      WAVEMQUri,
-	// 				},
-	// 			},
-	// 		},
-	// 	},
-	// })
-	// require.NoError(t, err)
-	// require.Nil(t, attresp.Error)
-	// resp, err := am.wave.ResyncPerspectiveGraph(context.Background(), &pb.ResyncPerspectiveGraphParams{
-	// 	Perspective: am.ourPerspective,
-	// })
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// if resp.Error != nil {
-	// 	panic(resp.Error.Message)
-	// }
-	// err = am.wave.WaitForSyncCompleteHack(&pb.SyncParams{
-	// 	Perspective: am.ourPerspective,
-	// })
-	// if err != nil {
-	// 	panic(err)
-	// }
 	err = am.CheckSubscription(subreq)
 	require.NoError(t, err)
 }
@@ -241,6 +194,110 @@ func BenchmarkFormMessage(b *testing.B) {
 	}
 	fmt.Printf("===== END >>>>>>\n")
 }
+
+func BenchmarkFormMessageLongProof(t *testing.B) {
+	ns, err := am.wave.CreateEntity(context.Background(), &pb.CreateEntityParams{})
+	require.NoError(t, err)
+	am.wave.PublishEntity(context.Background(), &pb.PublishEntityParams{
+		DER: ns.PublicDER,
+	})
+	ent, err := am.wave.CreateEntity(context.Background(), &pb.CreateEntityParams{})
+	require.NoError(t, err)
+	am.wave.PublishEntity(context.Background(), &pb.PublishEntityParams{
+		DER: ent.PublicDER,
+	})
+	attresp, err := am.wave.CreateAttestation(context.Background(), &pb.CreateAttestationParams{
+		Perspective: &pb.Perspective{
+			EntitySecret: &pb.EntitySecret{
+				DER: ns.SecretDER,
+			},
+		},
+		Publish:     true,
+		SubjectHash: ent.Hash,
+		Policy: &pb.Policy{
+			RTreePolicy: &pb.RTreePolicy{
+				Namespace:    ns.Hash,
+				Indirections: 20,
+				Statements: []*pb.RTreePolicyStatement{
+					{
+						PermissionSet: []byte(WAVEMQPermissionSet),
+						Permissions:   []string{WAVEMQPublish},
+						Resource:      "foo/bar",
+					},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Nil(t, attresp.Error)
+
+	prevEnt := ent
+	endEnt := ent
+	for i := 0; i < 19; i++ {
+		endEnt, err = am.wave.CreateEntity(context.Background(), &pb.CreateEntityParams{})
+		if err != nil {
+			panic(err)
+		}
+		if endEnt.Error != nil {
+			panic(endEnt.Error.Message)
+		}
+		entresp, err := am.wave.PublishEntity(context.Background(), &pb.PublishEntityParams{
+			DER: endEnt.PublicDER,
+		})
+		if err != nil {
+			panic(err)
+		}
+		if entresp.Error != nil {
+			panic(entresp.Error.Message)
+		}
+		attresp, err := am.wave.CreateAttestation(context.Background(), &pb.CreateAttestationParams{
+			Perspective: &pb.Perspective{
+				EntitySecret: &pb.EntitySecret{
+					DER: prevEnt.SecretDER,
+				},
+			},
+			SubjectHash: endEnt.Hash,
+			Policy: &pb.Policy{
+				RTreePolicy: &pb.RTreePolicy{
+					Namespace:    ns.Hash,
+					Indirections: 20,
+					Statements: []*pb.RTreePolicyStatement{
+						&pb.RTreePolicyStatement{
+							PermissionSet: []byte(WAVEMQPermissionSet),
+							Permissions:   []string{WAVEMQPublish},
+							Resource:      "foo/bar",
+						},
+					},
+				},
+			},
+			Publish: true,
+		})
+		if err != nil {
+			panic(err)
+		}
+		if attresp.Error != nil {
+			panic(attresp.Error.Message)
+		}
+		prevEnt = endEnt
+	}
+	persp := &mqpb.Perspective{
+		EntitySecret: &mqpb.EntitySecret{
+			DER: endEnt.SecretDER,
+		},
+	}
+	t.ResetTimer()
+	fmt.Printf("===== BEGIN <<<<\n")
+	for i := 0; i < t.N; i++ {
+		_, err := am.FormMessage(&mqpb.PublishParams{
+			Perspective: persp,
+			Namespace:   ns.Hash,
+			Uri:         "foo/bar",
+		}, "lol")
+		require.NoError(t, err)
+	}
+	fmt.Printf("===== END >>>>>>\n")
+}
+
 func TestMessage(t *testing.T) {
 	ns, err := am.wave.CreateEntity(context.Background(), &pb.CreateEntityParams{})
 	require.NoError(t, err)
@@ -361,7 +418,7 @@ func TestEncryptedMessage(t *testing.T) {
 		Perspective:         persp,
 		Namespace:           ns.Hash,
 		Uri:                 "foo/bar",
-		Content:             []*mqpb.PayloadObject{{Schema: "text", Content: content}},
+		Content:             []*mqpb.PayloadObject{{Schema: "text", Content: content}, {Schema: "nottext", Content: []byte("something else")}},
 		EncryptionPartition: [][]byte{[]byte("foo"), []byte("bar")},
 	}, "lol")
 	require.NoError(t, err)
@@ -400,11 +457,10 @@ func TestEncryptedMessage(t *testing.T) {
 
 	m, err = am.PrepareMessage(persp, msg)
 	require.NoError(t, err)
-	payload := []byte{}
-	for _, po := range m.Tbs.Payload {
-		payload = append(payload, po.Content...)
-	}
-	require.Equal(t, payload, content)
+	require.Equal(t, m.Tbs.Payload[0].Schema, "text")
+	require.Equal(t, m.Tbs.Payload[0].Content, content)
+	require.Equal(t, m.Tbs.Payload[1].Schema, "nottext")
+	require.Equal(t, m.Tbs.Payload[1].Content, []byte("something else"))
 }
 
 func BenchmarkCheckMessage(t *testing.B) {

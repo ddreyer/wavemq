@@ -118,7 +118,7 @@ message Message {
   repeated int64 timestamps = 5;
   repeated int64 drops = 6;
   bool persist = 7;
-
+  bytes proofHash = 8;
 }
 message PayloadObject {
   string schema = 1;
