@@ -189,6 +189,110 @@ func BenchmarkFormMessage(b *testing.B) {
 	}
 	fmt.Printf("===== END >>>>>>\n")
 }
+
+func BenchmarkFormMessageLongProof(t *testing.B) {
+	ns, err := am.wave.CreateEntity(context.Background(), &pb.CreateEntityParams{})
+	require.NoError(t, err)
+	am.wave.PublishEntity(context.Background(), &pb.PublishEntityParams{
+		DER: ns.PublicDER,
+	})
+	ent, err := am.wave.CreateEntity(context.Background(), &pb.CreateEntityParams{})
+	require.NoError(t, err)
+	am.wave.PublishEntity(context.Background(), &pb.PublishEntityParams{
+		DER: ent.PublicDER,
+	})
+	attresp, err := am.wave.CreateAttestation(context.Background(), &pb.CreateAttestationParams{
+		Perspective: &pb.Perspective{
+			EntitySecret: &pb.EntitySecret{
+				DER: ns.SecretDER,
+			},
+		},
+		Publish:     true,
+		SubjectHash: ent.Hash,
+		Policy: &pb.Policy{
+			RTreePolicy: &pb.RTreePolicy{
+				Namespace:    ns.Hash,
+				Indirections: 20,
+				Statements: []*pb.RTreePolicyStatement{
+					{
+						PermissionSet: []byte(WAVEMQPermissionSet),
+						Permissions:   []string{WAVEMQPublish},
+						Resource:      "foo/bar",
+					},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Nil(t, attresp.Error)
+
+	prevEnt := ent
+	endEnt := ent
+	for i := 0; i < 19; i++ {
+		endEnt, err = am.wave.CreateEntity(context.Background(), &pb.CreateEntityParams{})
+		if err != nil {
+			panic(err)
+		}
+		if endEnt.Error != nil {
+			panic(endEnt.Error.Message)
+		}
+		entresp, err := am.wave.PublishEntity(context.Background(), &pb.PublishEntityParams{
+			DER: endEnt.PublicDER,
+		})
+		if err != nil {
+			panic(err)
+		}
+		if entresp.Error != nil {
+			panic(entresp.Error.Message)
+		}
+		attresp, err := am.wave.CreateAttestation(context.Background(), &pb.CreateAttestationParams{
+			Perspective: &pb.Perspective{
+				EntitySecret: &pb.EntitySecret{
+					DER: prevEnt.SecretDER,
+				},
+			},
+			SubjectHash: endEnt.Hash,
+			Policy: &pb.Policy{
+				RTreePolicy: &pb.RTreePolicy{
+					Namespace:    ns.Hash,
+					Indirections: 20,
+					Statements: []*pb.RTreePolicyStatement{
+						&pb.RTreePolicyStatement{
+							PermissionSet: []byte(WAVEMQPermissionSet),
+							Permissions:   []string{WAVEMQPublish},
+							Resource:      "foo/bar",
+						},
+					},
+				},
+			},
+			Publish: true,
+		})
+		if err != nil {
+			panic(err)
+		}
+		if attresp.Error != nil {
+			panic(attresp.Error.Message)
+		}
+		prevEnt = endEnt
+	}
+	persp := &mqpb.Perspective{
+		EntitySecret: &mqpb.EntitySecret{
+			DER: endEnt.SecretDER,
+		},
+	}
+	t.ResetTimer()
+	fmt.Printf("===== BEGIN <<<<\n")
+	for i := 0; i < t.N; i++ {
+		_, err := am.FormMessage(&mqpb.PublishParams{
+			Perspective: persp,
+			Namespace:   ns.Hash,
+			Uri:         "foo/bar",
+		}, "lol")
+		require.NoError(t, err)
+	}
+	fmt.Printf("===== END >>>>>>\n")
+}
+
 func TestMessage(t *testing.T) {
 	ns, err := am.wave.CreateEntity(context.Background(), &pb.CreateEntityParams{})
 	require.NoError(t, err)
