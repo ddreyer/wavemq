@@ -117,12 +117,10 @@ Then you need to create an entity for your designated router:
 wv mke -o router.ent --expiry 1y
 ```
 
-Then you need to grant your router the permission to route and decrypt on the namespace:
+Then you need to grant your router the permission to route on the namespace:
 
 ```bash
 wv rtgrant --attester namespace.ent --subject router.ent --expiry 1y "wavemq:route@namespace.ent/*" 
-
-wv rtgrant --attester namespace.ent --subject router.ent --expiry 1y "wave:decrypt@namespace.ent/wavemq"
 ```
 
 Finally, you need to create the proof that the router will hand to peers:

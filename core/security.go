@@ -39,6 +39,9 @@ const ValidatedProofMaxCacheTime = 6 * time.Hour
 const SuccessfulProofCacheTime = 6 * time.Hour
 const FailedProofCacheTime = 5 * time.Minute
 
+var key []byte
+var id []byte
+
 type AuthModule struct {
 	cfg  *waved.Configuration
 	wave *eapi.EAPI
@@ -232,6 +235,33 @@ func (am *AuthModule) SetRouterEntityFile(filename string) error {
 	return nil
 }
 
+func (am *AuthModule) provisionKey(perspective *eapipb.Perspective, ns []byte) {
+	encresp, err := am.wave.EncryptMessage(context.Background(), &eapipb.EncryptMessageParams{
+		Namespace: ns,
+		Resource:  "whatever",
+		Content:   []byte("whatever"),
+	})
+	if err != nil {
+		panic(err)
+	}
+	if encresp.Error != nil {
+		panic(encresp.Error.Message)
+	}
+	resp, err := am.wave.GetDecryptKey(context.Background(), &eapipb.DecryptMessageParams{
+		Perspective: perspective,
+		Ciphertext:  encresp.Ciphertext,
+	})
+	if err != nil {
+		panic(err)
+	}
+	if resp.Error != nil {
+		panic(resp.Error.Message)
+	}
+
+	key = resp.Key
+	id = resp.Id
+}
+
 //This checks that a publish message is authorized for the given URI
 func (am *AuthModule) CheckMessage(persp *pb.Perspective, m *pb.Message) wve.WVE {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -288,23 +318,15 @@ func (am *AuthModule) CheckMessage(persp *pb.Perspective, m *pb.Message) wve.WVE
 		//fmt.Printf("returning message invalid from cache\n")
 		return wve.Err(wve.ProofInvalid, "this proof has been cached as invalid\n")
 	}
-	perspective := &eapipb.Perspective{
-		EntitySecret: &eapipb.EntitySecret{
-			DER:        persp.EntitySecret.DER,
-			Passphrase: persp.EntitySecret.Passphrase,
-		},
-	}
-	decresp, err := am.wave.DecryptMessage(context.Background(), &eapipb.DecryptMessageParams{
-		Perspective: perspective,
-		Ciphertext:  m.Tbs.ProofDER,
+
+	decryptedProof, err := iapi.DecryptProofWithKey(context.Background(), &iapi.PDecryptProof{
+		Ciphertext: m.Tbs.ProofDER,
+		Key:        key,
+		Id:         id,
 	})
 	if err != nil {
 		return wve.ErrW(wve.MessageDecryptionError, "failed to decrypt", err)
 	}
-	if decresp.Error != nil {
-		return wve.Err(wve.MessageDecryptionError, decresp.Error.Message)
-	}
-	decryptedProof := decresp.Content
 
 	presp, err := am.wave.VerifyProof(ctx, &eapipb.VerifyProofParams{
 		ProofDER: decryptedProof,
@@ -396,9 +418,10 @@ func (am *AuthModule) CheckSubscription(s *pb.PeerSubscribeParams) wve.WVE {
 		return wve.Err(wve.ProofInvalid, "this proof has been cached as invalid\n")
 	}
 
-	decresp, err := am.wave.DecryptMessage(context.Background(), &eapipb.DecryptMessageParams{
+	decresp, err := am.wave.DecryptProof(context.Background(), &eapipb.DecryptProofParams{
 		Perspective: am.ourPerspective,
 		Ciphertext:  s.Tbs.ProofDER,
+		Namespace:   s.Tbs.Namespace,
 	})
 	if err != nil {
 		return wve.ErrW(wve.MessageDecryptionError, "failed to decrypt", err)
@@ -676,10 +699,9 @@ func (am *AuthModule) FormMessage(p *pb.PublishParams, routerID string) (*pb.Mes
 				return nil, wve.Err(wve.NoProofFound, proofresp.Error.Message)
 			}
 
-			// encrypt proof under wavemq uri
-			encresp, err := am.wave.EncryptMessage(context.Background(), &eapipb.EncryptMessageParams{
+			// encrypt proof under namespace IBE public key
+			encresp, err := am.wave.EncryptProof(context.Background(), &eapipb.EncryptMessageParams{
 				Namespace: p.Namespace,
-				Resource:  WAVEMQUri,
 				Content:   proofresp.ProofDER,
 			})
 			if err != nil {
@@ -857,9 +879,8 @@ func (am *AuthModule) FormSubRequest(p *pb.SubscribeParams, routerID string) (*p
 				am.bcachemu.Unlock()
 				return nil, wve.Err(wve.NoProofFound, proofresp.Error.Message)
 			}
-			encresp, err := am.wave.EncryptMessage(context.Background(), &eapipb.EncryptMessageParams{
+			encresp, err := am.wave.EncryptProof(context.Background(), &eapipb.EncryptMessageParams{
 				Namespace: p.Namespace,
-				Resource:  WAVEMQUri,
 				Content:   proofresp.ProofDER,
 			})
 			if err != nil {
