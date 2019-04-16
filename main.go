@@ -1,12 +1,5 @@
 package main
 
-/*
-#include "enclave_app.h"
-#cgo CFLAGS: -I/home/sgx/wave-verify-sgx/enclave_plus_app_src -I/home/sgx/wave-verify-sgx/utils -I/home/sgx/linux-sgx/linux/installer/bin/sgxsdk/include
-#cgo LDFLAGS: /home/sgx/wave-verify-sgx/enclave_plus_app_src/libverify.so
-*/
-import "C"
-
 import (
 	"fmt"
 	"os"
@@ -88,12 +81,7 @@ func main() {
 	server.NewPeerServer(tm, am, &conf.PeerConfig)
 
 	// initialize enclave
-	fmt.Println("initializing enclave")
-	if ret := C.init_enclave(); ret != 0 {
-		fmt.Printf("failed to initialize enclave\n")
-		os.Exit(1)
-	}
-	fmt.Println("done initializing enclave")
+	core.InitEnclave()
 
 	sigchan := make(chan os.Signal, 30)
 	signal.Notify(sigchan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
