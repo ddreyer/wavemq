@@ -191,11 +191,11 @@ func (s *peerServer) PeerSubscribe(p *pb.PeerSubscribeParams, r pb.WAVEMQPeering
 			it.Drops = append(it.Drops, q.Drops())
 
 			cacheKey := peerProofCacheKey{}
-			cacheKey.Low, cacheKey.High = cityhash.Hash128(it.ProofDER)
+			cacheKey.Low, cacheKey.High = cityhash.Hash128(it.Tbs.ProofDER)
 
 			if sentProofs[cacheKey] {
 				it.ProofHash = cacheKey.Serialize()
-				it.ProofDER = nil
+				it.Tbs.ProofDER = nil
 			} else {
 				sentProofs[cacheKey] = true
 			}
