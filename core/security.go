@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"bitbucket.org/creachadair/cityhash"
-	verify "github.com/ddreyer/wave-verify-sgx/lang/go"
+	verify "github.com/ddreyer/wave-verify/lang/go"
 	"github.com/huichen/murmur"
 	"github.com/immesys/wave/eapi"
 	eapipb "github.com/immesys/wave/eapi/pb"
@@ -230,15 +230,6 @@ func (am *AuthModule) SetRouterEntityFile(filename string) error {
 	}
 	am.perspectiveHash = iresp.Entity.Hash
 	return nil
-}
-
-func InitEnclave() {
-	// initialize enclave
-	fmt.Println("initializing enclave")
-	if err := verify.InitEnclave(); err != nil {
-		panic(err)
-	}
-	fmt.Println("done initializing enclave")
 }
 
 //This checks that a publish message is authorized for the given URI
