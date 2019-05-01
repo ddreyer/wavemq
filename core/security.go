@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"bitbucket.org/creachadair/cityhash"
+	verify "github.com/ddreyer/wave-verify/lang/go"
 	"github.com/huichen/murmur"
 	"github.com/immesys/wave/eapi"
 	eapipb "github.com/immesys/wave/eapi/pb"
@@ -258,9 +259,11 @@ func (am *AuthModule) provisionKey(perspective *eapipb.Perspective, ns []byte) {
 	if resp.Error != nil {
 		panic(resp.Error.Message)
 	}
-
-	key = resp.Key
-	id = resp.Id
+	key := resp.Key
+	id := resp.Id
+	if err := verify.ProvisionKey(key, id); err != nil {
+		panic(err)
+	}
 }
 
 //This checks that a publish message is authorized for the given URI
@@ -330,44 +333,27 @@ func (am *AuthModule) CheckMessage(persp *pb.Perspective, m *pb.Message) wve.WVE
 		}
 	}
 
-	decryptedProof, err := iapi.DecryptProofWithKey(context.Background(), &iapi.PDecryptProof{
-		Ciphertext: m.Tbs.ProofDER,
-		Key:        key,
-		Id:         id,
-	})
-	if err != nil {
-		return wve.ErrW(wve.MessageDecryptionError, "failed to decrypt", err)
-	}
-
-	presp, err := am.wave.VerifyProof(ctx, &eapipb.VerifyProofParams{
-		ProofDER: decryptedProof,
-		Subject:  m.Tbs.SourceEntity,
-		RequiredRTreePolicy: &eapipb.RTreePolicy{
-			Namespace: m.Tbs.Namespace,
-			Statements: []*eapipb.RTreePolicyStatement{
-				{
-					PermissionSet: []byte(WAVEMQPermissionSet),
-					Permissions:   []string{WAVEMQPublish},
-					Resource:      m.Tbs.Uri,
-				},
+	expiry, err := verify.VerifyProof(m.Tbs.ProofDER, m.Tbs.SourceEntity, &eapipb.RTreePolicy{
+		Namespace: m.Tbs.Namespace,
+		Statements: []*eapipb.RTreePolicyStatement{
+			{
+				PermissionSet: []byte(WAVEMQPermissionSet),
+				Permissions:   []string{WAVEMQPublish},
+				Resource:      m.Tbs.Uri,
 			},
 		},
 	})
+	cancel()
 	if err != nil {
-		return wve.ErrW(wve.InternalError, "could not validate proof", err)
-	}
-	if presp.Error != nil {
 		am.icachemu.Lock()
 		am.icache[ick] = &icacheItem{
 			CacheExpiry: time.Now().Add(ValidatedProofMaxCacheTime),
 			Valid:       false,
-			DER:         m.Tbs.ProofDER,
 		}
 		am.icachemu.Unlock()
-		return wve.Err(wve.ProofInvalid, presp.Error.Message)
+		return wve.Err(wve.EnclaveError, "failed to C verify proof")
 	}
 
-	expiry := time.Unix(0, presp.Result.Expiry*1e6)
 	if expiry.After(time.Now().Add(ValidatedProofMaxCacheTime)) {
 		expiry = time.Now().Add(ValidatedProofMaxCacheTime)
 	}
@@ -375,7 +361,6 @@ func (am *AuthModule) CheckMessage(persp *pb.Perspective, m *pb.Message) wve.WVE
 	am.icache[ick] = &icacheItem{
 		CacheExpiry: expiry,
 		Valid:       true,
-		DER:         m.Tbs.ProofDER,
 	}
 	am.icachemu.Unlock()
 	return nil
