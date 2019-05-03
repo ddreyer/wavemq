@@ -249,7 +249,6 @@ func (am *AuthModule) CheckMessage(m *pb.Message) wve.WVE {
 		hash.Write(po.Content)
 	}
 	hash.Write([]byte(m.Tbs.OriginRouter))
-	hash.Write(m.ProofDER)
 	digest := hash.Sum(nil)
 	resp, err := am.wave.VerifySignature(ctx, &eapipb.VerifySignatureParams{
 		Signer: m.Tbs.SourceEntity,
@@ -725,7 +724,6 @@ func (am *AuthModule) FormMessage(p *pb.PublishParams, routerID string) (*pb.Mes
 		hash.Write(po.Content)
 	}
 	hash.Write([]byte(routerID))
-	hash.Write(proofder)
 	digest := hash.Sum(nil)
 
 	signresp, err := am.wave.Sign(context.Background(), &eapipb.SignParams{
