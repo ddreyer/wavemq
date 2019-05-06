@@ -283,7 +283,6 @@ func (am *AuthModule) CheckMessage(persp *pb.Perspective, m *pb.Message) wve.WVE
 		hash.Write(po.Content)
 	}
 	hash.Write([]byte(m.Tbs.OriginRouter))
-	hash.Write(m.Tbs.ProofDER)
 	digest := hash.Sum(nil)
 	resp, err := am.wave.VerifySignature(ctx, &eapipb.VerifySignatureParams{
 		Signer: m.Tbs.SourceEntity,
@@ -376,7 +375,6 @@ func (am *AuthModule) CheckSubscription(s *pb.PeerSubscribeParams) wve.WVE {
 	hash.Write([]byte(s.Tbs.Uri))
 	hash.Write([]byte(s.Tbs.Id))
 	hash.Write([]byte(s.Tbs.RouterID))
-	hash.Write(s.Tbs.ProofDER)
 	digest := hash.Sum(nil)
 
 	resp, err := am.wave.VerifySignature(context.Background(), &eapipb.VerifySignatureParams{
@@ -773,7 +771,6 @@ func (am *AuthModule) FormMessage(p *pb.PublishParams, routerID string) (*pb.Mes
 		hash.Write(po.Content)
 	}
 	hash.Write([]byte(routerID))
-	hash.Write(proofder)
 	digest := hash.Sum(nil)
 
 	signresp, err := am.wave.Sign(context.Background(), &eapipb.SignParams{
@@ -936,7 +933,6 @@ func (am *AuthModule) FormSubRequest(p *pb.SubscribeParams, routerID string) (*p
 	hash.Write([]byte(p.Uri))
 	hash.Write([]byte(p.Identifier))
 	hash.Write([]byte(routerID))
-	hash.Write(proofder)
 	digest := hash.Sum(nil)
 
 	signresp, err := am.wave.Sign(context.Background(), &eapipb.SignParams{
