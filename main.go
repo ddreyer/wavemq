@@ -1,12 +1,5 @@
 package main
 
-/*
-#include "enclave_app.h"
-#cgo CFLAGS: -I/home/sgx/wave-verify-sgx2/enclave_plus_app_src -I/home/sgx/wave-verify-sgx2/utils -I/home/sgx/linux-sgx/linux/installer/bin/sgxsdk/include
-#cgo LDFLAGS: -L/home/sgx/wave-verify-sgx2/enclave_plus_app_src -lverify
-*/
-import "C"
-
 import (
 	"fmt"
 	"os"
